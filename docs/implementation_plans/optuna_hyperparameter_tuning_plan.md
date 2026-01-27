@@ -1,6 +1,6 @@
 # Optuna Hyperparameter Tuning Implementation Plan
 
-**Date**: January 26, 2026  
+**Date**: January 26, 2026
 **Status**: Planning Phase
 
 ## Overview
@@ -153,11 +153,11 @@ Integrate Optuna for automated hyperparameter optimization to systematically exp
 def objective(trial: optuna.Trial, base_config: dict) -> float:
     """
     Optuna objective function.
-    
+
     Args:
         trial: Optuna trial object
         base_config: Base configuration dictionary
-        
+
     Returns:
         Validation loss (to minimize)
     """
@@ -236,7 +236,7 @@ def objective(trial: optuna.Trial, base_config: dict) -> float:
 
 ### 2. Loss Function & Architecture
 - **Q2**: Should we include loss function and encoder name in the search space?
-  - **Recommendation**: 
+  - **Recommendation**:
     - **Loss function**: No (focal is already best for imbalance)
     - **Encoder name**: Maybe (but significantly increases search space and time)
   - **Alternative**: Run separate studies for each encoder

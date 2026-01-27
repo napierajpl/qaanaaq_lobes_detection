@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 def main():
     """Create tile registry from filtered tiles."""
     import argparse
-    
+
     project_root = get_project_root(__file__)
-    
+
     parser = argparse.ArgumentParser(description="Create tile registry from filtered_tiles.json")
     parser.add_argument(
         "--filtered-tiles",
@@ -66,32 +66,32 @@ def main():
         default=0.15,
         help="Test split fraction",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Resolve paths
     filtered_tiles_path = resolve_path(args.filtered_tiles, project_root)
     source_raster_path = resolve_path(args.source_raster, project_root)
     features_dir = resolve_path(args.features_dir, project_root)
-    
+
     if args.output:
         registry_path = resolve_path(args.output, project_root)
     else:
         registry_path = filtered_tiles_path.parent / "tile_registry.json"
-    
+
     # Validate inputs
     if not filtered_tiles_path.exists():
         logger.error(f"Filtered tiles file not found: {filtered_tiles_path}")
         sys.exit(1)
-    
+
     if not source_raster_path.exists():
         logger.error(f"Source raster not found: {source_raster_path}")
         sys.exit(1)
-    
+
     # Create registry
     logger.info(f"Creating tile registry: {registry_path}")
     registry = TileRegistry(registry_path, source_raster_path)
-    
+
     # Migrate from filtered_tiles.json
     registry.migrate_from_filtered_tiles(
         filtered_tiles_path=filtered_tiles_path,
@@ -101,7 +101,7 @@ def main():
         val_split=args.val_split,
         test_split=args.test_split,
     )
-    
+
     logger.info(f"Tile registry created successfully: {registry_path}")
     logger.info(f"Total tiles in registry: {len(registry.registry['tiles'])}")
 

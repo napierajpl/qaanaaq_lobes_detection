@@ -3,14 +3,14 @@
 
 project:
   name: "qaanaaq_lobes_detection"
-  
+
   spatial:
     extent:
       x_min: -563060.2336999999824911
       y_min: -1244811.3578999999444932
       x_max: -557029.8368000000482425
       y_max: -1237511.4036999999079853
-    
+
     crs:
       code: "EPSG:3413"
       name: "WGS 84 / NSIDC Sea Ice Polar Stereographic North"
@@ -20,18 +20,17 @@ project:
       celestial_body: "Earth"
       accuracy: "Based on World Geodetic System 1984 ensemble (EPSG:6326), which has a limited accuracy of at best 2 meters."
       reference: "Dynamic (relies on a datum which is not plate-fixed)"
-    
+
     raster:
       dimensions:
         x: 30152
         y: 36500
         bands: 3
-      
+
       origin:
         x: -563060.2336999999824911
         y: -1237511.4036999999079853
-      
+
       pixel_size:
         x: 0.1999998971875807385  # meters
         y: -0.1999987452054804438  # meters (negative = Y increases downward)
-

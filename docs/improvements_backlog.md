@@ -33,7 +33,7 @@ This file tracks potential improvements, ideas, and future work for the lobe det
    - **Status**: ✅ Implemented - Ready for testing (requires satlaspretrain-models installation)
    - **Implementation Summary**: See `docs/implementation_plans/satlaspretrain_implementation_summary.md`
    - **Implementation Plan**: See `docs/implementation_plans/satlaspretrain_integration.md`
-   - **References**: 
+   - **References**:
      - Identified in daily diary 2026-01-21
      - Research: "Semantic Segmentation of High-Resolution Remote Sensing Images with Improved U-Net Based on Transfer Learning"
      - SatlasPretrain: https://blog.allenai.org/satlaspretrain-models-foundation-models-for-satellite-and-aerial-imagery
@@ -58,7 +58,7 @@ This file tracks potential improvements, ideas, and future work for the lobe det
 
 6. **Data Augmentation**
    - **Why**: Increase effective dataset size, improve generalization
-   - **What**: 
+   - **What**:
      - Geometric: horizontal/vertical flips, rotations (90°, 180°, 270°)
      - Photometric (RGB only): brightness, contrast adjustments
      - Note: Don't augment DEM/Slope (preserve physical meaning)
@@ -89,7 +89,7 @@ This file tracks potential improvements, ideas, and future work for the lobe det
 
 10. **Two-Stage Training**
    - **Why**: Separate detection from regression
-   - **What**: 
+   - **What**:
      - Stage 1: Binary segmentation (lobe vs background) with Dice/Focal Loss
      - Stage 2: Fine-tune for regression (proximity values) on lobe pixels only
    - **Status**: Not implemented

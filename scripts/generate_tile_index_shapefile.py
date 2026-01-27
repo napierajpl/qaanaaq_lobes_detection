@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 def main():
     """Generate shapefile from tile registry."""
     import argparse
-    
+
     project_root = get_project_root(__file__)
-    
+
     parser = argparse.ArgumentParser(description="Generate shapefile from tile registry")
     parser.add_argument(
         "--registry",
@@ -42,33 +42,33 @@ def main():
         action="store_true",
         help="Only include valid tiles (filtered tiles)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Resolve paths
     registry_path = resolve_path(args.registry, project_root)
-    
+
     if args.output:
         output_path = resolve_path(args.output, project_root)
     else:
         output_path = registry_path.parent / "tile_index.shp"
-    
+
     # Validate inputs
     if not registry_path.exists():
         logger.error(f"Registry file not found: {registry_path}")
         sys.exit(1)
-    
+
     # Load registry
     logger.info(f"Loading tile registry: {registry_path}")
     registry = TileRegistry(registry_path)
-    
+
     # Generate shapefile
     generate_tile_index_shapefile(
         registry=registry,
         output_path=output_path,
         include_all_tiles=not args.valid_only,
     )
-    
+
     logger.info(f"Shapefile generated successfully: {output_path}")
 
 

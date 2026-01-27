@@ -9,6 +9,8 @@ import logging
 import sys
 import csv
 import datetime as dt
+import uuid
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -85,26 +87,53 @@ def _current_session_metadata(base_config: dict, mode: str) -> dict:
 
 
 def _load_previous_best(csv_path: Path) -> Optional[dict]:
-    """Return the best COMPLETED trial row from a previous CSV, or None."""
+    """
+    Return the best COMPLETED trial row from a CSV, or None.
+
+    Note: this helper is still used for small one-off CSVs; for the new single-file
+    append-only workflow we use `_load_rows()` + selection logic in `main()`.
+    """
     if not csv_path.exists():
         return None
-
-    with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    rows = _load_rows(csv_path)
     if not rows:
         return None
-
-    def row_value(r: dict) -> float:
-        try:
-            return float(r.get("value", "inf"))
-        except Exception:
-            return float("inf")
-
     completed = [r for r in rows if (r.get("state") == "COMPLETE")]
     if not completed:
         return None
-    return min(completed, key=row_value)
+    return min(completed, key=lambda r: _row_value(r))
+
+
+def _load_rows(csv_path: Path) -> list[dict]:
+    if not csv_path.exists():
+        return []
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        return list(reader)
+
+
+def _row_value(r: dict) -> float:
+    try:
+        return float(r.get("value", "inf"))
+    except Exception:
+        return float("inf")
+
+
+def _row_dt(r: dict) -> dt.datetime:
+    """
+    Best-effort timestamp for sorting rows newest-first.
+    Prefers `session_started_at` (new format), then exported_at, then datetime_complete.
+    """
+    for k in ("session_started_at", "exported_at", "datetime_complete", "datetime_start"):
+        v = (r.get(k) or "").strip()
+        if not v:
+            continue
+        try:
+            # Accept both "2026-01-27T20:13:47" and full iso with microseconds
+            return dt.datetime.fromisoformat(v)
+        except Exception:
+            continue
+    return dt.datetime.min
 
 
 def _compatibility_mismatches(prev: dict, current: dict) -> dict:
@@ -147,8 +176,8 @@ def _prompt_confirm_seed(mismatches: dict, csv_path: Path, prev_trial_number: st
     return answer in ("y", "yes")
 
 
-def _enqueue_seed_from_row(study: optuna.Study, best_row: dict) -> None:
-    """Enqueue the previous best hyperparameters as the first trial."""
+def _enqueue_seed_from_row(study: optuna.Study, best_row: dict) -> dict:
+    """Enqueue the previous best hyperparameters as the first trial. Returns params used."""
     params = {}
     for k in TUNED_PARAM_KEYS:
         if k not in best_row:
@@ -168,82 +197,41 @@ def _enqueue_seed_from_row(study: optuna.Study, best_row: dict) -> None:
 
     if params:
         study.enqueue_trial(params)
+    return params
 
 
-def _archive_csv_path(latest_csv_path: Path) -> Path:
-    """Return a timestamped archive path for a given 'latest' CSV path."""
-    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    archive_dir = latest_csv_path.parent / "archive"
-    return archive_dir / f"{latest_csv_path.stem}_{ts}{latest_csv_path.suffix}"
-
-
-def _find_candidate_csvs(results_dir: Path, study_name: str, mode: str) -> list[Path]:
-    """Find CSVs for this study/mode, including archives."""
-    patterns = [
-        f"{study_name}_{mode}.csv",
-        f"{study_name}_{mode}_*.csv",
-        f"archive/{study_name}_{mode}_*.csv",
-        f"archive/{study_name}_{mode}.csv",
-    ]
-    out: list[Path] = []
-    for p in patterns:
-        out.extend(results_dir.glob(p))
-    # Sort newest-first by mtime
-    out = [p for p in out if p.exists()]
-    out.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    # De-dup while preserving order
-    seen = set()
-    deduped: list[Path] = []
-    for p in out:
-        if str(p) in seen:
-            continue
-        seen.add(str(p))
-        deduped.append(p)
-    return deduped
-
-
-def _pick_best_compatible_seed(
-    candidate_csvs: list[Path],
-    session_meta: dict,
-) -> Optional[tuple[Path, dict]]:
-    """
-    From a list of candidate CSVs, pick the most recent one that has a COMPLETE best row
-    and no compatibility mismatches.
-    """
-    for csv_path in candidate_csvs:
-        best_row = _load_previous_best(csv_path)
-        if best_row is None:
-            continue
-        mismatches = _compatibility_mismatches(best_row, session_meta)
-        if not mismatches:
-            return (csv_path, best_row)
-    return None
-
-
-def _prompt_seed_choice(
+def _prompt_seed_choice_single_file(
     mismatches: dict,
-    latest_csv: Path,
-    latest_best_row: dict,
-    compatible_pick: Optional[tuple[Path, dict]],
+    recent_best_row: dict,
+    compatible_best_row: Optional[dict],
 ) -> str:
     """
-    Ask user what to do when the most recent run seems incompatible.
-    Returns one of: "use_latest", "use_archive", "no_seed".
+    Ask user what to do when the most recent session best is incompatible.
+    Returns one of: "use_recent", "use_compatible", "no_seed".
     """
     print("")
-    print("WARNING: Most recent previous best hyperparameters may be incompatible with this session.")
-    print(f"Most recent CSV: {latest_csv}")
-    print(f"Most recent best trial: {latest_best_row.get('trial_number', '?')} value={latest_best_row.get('value', '?')}")
+    print("WARNING: Most recent session best hyperparameters may be incompatible with this session.")
+    print(
+        "Most recent session best: "
+        f"trial_number={recent_best_row.get('trial_number','?')} value={recent_best_row.get('value','?')} "
+        f"session_id={recent_best_row.get('session_id','?')}"
+    )
     print("Mismatches:")
     for k, v in mismatches.items():
         print(f"  - {k}: previous={v['previous']}  current={v['current']}")
     print("")
 
     options: list[tuple[str, str]] = []
-    options.append(("1", "Use most recent run anyway (may make no sense)"))
-    if compatible_pick is not None:
-        p, row = compatible_pick
-        options.append(("2", f"Use archived compatible run: {p} (trial={row.get('trial_number','?')} value={row.get('value','?')})"))
+    options.append(("1", "Use most recent anyway (may make no sense)"))
+    if compatible_best_row is not None:
+        options.append(
+            (
+                "2",
+                "Use best compatible from history: "
+                f"trial_number={compatible_best_row.get('trial_number','?')} value={compatible_best_row.get('value','?')} "
+                f"session_id={compatible_best_row.get('session_id','?')}",
+            )
+        )
         options.append(("3", "No seeding (cold start)"))
     else:
         options.append(("2", "No seeding (cold start)"))
@@ -256,25 +244,36 @@ def _prompt_seed_choice(
     except Exception:
         return "no_seed"
 
-    if compatible_pick is not None:
+    if compatible_best_row is not None:
         if answer == "1":
-            return "use_latest"
+            return "use_recent"
         if answer == "2":
-            return "use_archive"
+            return "use_compatible"
         return "no_seed"
     else:
         if answer == "1":
-            return "use_latest"
+            return "use_recent"
         return "no_seed"
 
 
-def _export_study_csv(study: optuna.Study, csv_path: Path, session_meta: dict) -> None:
+def _append_study_trials_csv(
+    study: optuna.Study,
+    csv_path: Path,
+    session_meta: dict,
+    session_id: str,
+    session_started_at: str,
+) -> None:
+    """
+    Append this session's trials to a single CSV (append-only history).
+    """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build a consistent header (trial info + tuned params + metadata + mlflow ids)
     header = [
         "exported_at",
+        "session_id",
+        "session_started_at",
         "study_name",
+        "mode",
         "trial_number",
         "state",
         "value",
@@ -287,7 +286,6 @@ def _export_study_csv(study: optuna.Study, csv_path: Path, session_meta: dict) -
         "mlflow_run_name",
         "mlflow_tracking_uri",
         # Compatibility fields
-        "mode",
         "model_architecture",
         "model_in_channels",
         "model_out_channels",
@@ -309,26 +307,31 @@ def _export_study_csv(study: optuna.Study, csv_path: Path, session_meta: dict) -
     ]
 
     exported_at = dt.datetime.now().isoformat(timespec="seconds")
+    file_exists = csv_path.exists() and csv_path.stat().st_size > 0
 
-    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+    with open(csv_path, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=header)
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
 
         for t in study.trials:
+            ua = t.user_attrs or {}
             row = {
                 "exported_at": exported_at,
+                "session_id": session_id,
+                "session_started_at": session_started_at,
                 "study_name": study.study_name,
+                "mode": session_meta.get("mode", ""),
                 "trial_number": t.number,
                 "state": t.state.name,
                 "value": t.value if t.value is not None else "",
                 "datetime_start": t.datetime_start.isoformat() if t.datetime_start else "",
                 "datetime_complete": t.datetime_complete.isoformat() if t.datetime_complete else "",
             }
+
             for k in TUNED_PARAM_KEYS:
                 row[k] = t.params.get(k, "")
 
-            # user attrs (set by train_model_with_config)
-            ua = t.user_attrs or {}
             for k in (
                 "mlflow_experiment_id",
                 "mlflow_run_id",
@@ -342,9 +345,7 @@ def _export_study_csv(study: optuna.Study, csv_path: Path, session_meta: dict) -
             ):
                 row[k] = ua.get(k, "")
 
-            # session meta (ensure present even if trial did not populate user_attrs)
             for k in (
-                "mode",
                 "model_architecture",
                 "model_in_channels",
                 "model_out_channels",
@@ -362,21 +363,94 @@ def _export_study_csv(study: optuna.Study, csv_path: Path, session_meta: dict) -
             writer.writerow(row)
 
 
+def _append_rows_from_existing_csv(
+    src_csv: Path,
+    dst_csv: Path,
+    default_study_name: str,
+) -> int:
+    """
+    Append rows from an existing Optuna CSV into our single append-only history CSV.
+    This is explicit (user-driven) migration, not automatic bootstrap.
+    """
+    rows = _load_rows(src_csv)
+    if not rows:
+        return 0
+
+    # Use the source file's exported_at as a stable session marker when available
+    exported_at = (rows[0].get("exported_at") or dt.datetime.now().isoformat(timespec="seconds")).strip()
+    session_id = f"import_{src_csv.stem}_{uuid.uuid4().hex[:8]}"
+
+    # Our destination writer schema (must match `_append_study_trials_csv`)
+    header = [
+        "exported_at",
+        "session_id",
+        "session_started_at",
+        "study_name",
+        "mode",
+        "trial_number",
+        "state",
+        "value",
+        "datetime_start",
+        "datetime_complete",
+    ] + TUNED_PARAM_KEYS + [
+        "mlflow_experiment_id",
+        "mlflow_run_id",
+        "mlflow_run_name",
+        "mlflow_tracking_uri",
+        "model_architecture",
+        "model_in_channels",
+        "model_out_channels",
+        "training_iou_threshold",
+        "data_normalize_rgb",
+        "data_standardize_dem",
+        "data_standardize_slope",
+        "filtered_tiles_path",
+        "features_dir",
+        "targets_dir",
+        "proximity_token",
+        "pruned_epoch",
+        "pruned_val_loss",
+        "best_val_loss",
+        "best_val_mae",
+        "best_val_iou",
+    ]
+
+    dst_csv.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = dst_csv.exists() and dst_csv.stat().st_size > 0
+    written = 0
+
+    with open(dst_csv, "a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        if not file_exists:
+            writer.writeheader()
+
+        for r in rows:
+            out = {k: "" for k in header}
+            out.update(r)
+            out["session_id"] = r.get("session_id") or session_id
+            out["session_started_at"] = r.get("session_started_at") or exported_at
+            out["study_name"] = r.get("study_name") or default_study_name
+            writer.writerow(out)
+            written += 1
+
+    return written
+
+
 def objective(trial: optuna.Trial, base_config: dict, mode: str) -> float:
     """
     Optuna objective function for hyperparameter optimization.
-    
+
     Args:
         trial: Optuna trial object
         base_config: Base configuration dictionary
         mode: "dev" or "production"
-        
+
     Returns:
         Best validation loss (to minimize)
     """
     # Create a copy of config to modify
     config = yaml.safe_load(yaml.dump(base_config))  # Deep copy
-    
+
     # Suggest hyperparameters
     # Top 5 most impactful (Q1: Start with 5)
     # Optuna v4+: prefer suggest_float(..., log=True)
@@ -385,10 +459,10 @@ def objective(trial: optuna.Trial, base_config: dict, mode: str) -> float:
     config["training"]["weight_decay"] = trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True)
     config["training"]["focal_alpha"] = trial.suggest_float("focal_alpha", 0.25, 0.95)
     config["training"]["focal_gamma"] = trial.suggest_float("focal_gamma", 1.0, 4.0)
-    
+
     # Q2: Include loss function and encoder name
     loss_function = trial.suggest_categorical(
-        "loss_function", 
+        "loss_function",
         ["focal", "combined", "weighted_smooth_l1"]
     )
     config["training"]["loss_function"] = loss_function
@@ -398,17 +472,17 @@ def objective(trial: optuna.Trial, base_config: dict, mode: str) -> float:
         ["resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"]
     )
     config["model"]["encoder"]["name"] = encoder_name
-    
+
     # Additional hyperparameters (medium priority)
     config["model"]["decoder_dropout"] = trial.suggest_float("decoder_dropout", 0.0, 0.5)
     config["training"]["lr_scheduler_patience"] = trial.suggest_int("lr_scheduler_patience", 5, 20)
     config["training"]["lr_scheduler_factor"] = trial.suggest_float("lr_scheduler_factor", 0.1, 0.9)
     config["training"]["max_grad_norm"] = trial.suggest_float("max_grad_norm", 0.1, 10.0, log=True)
     config["model"]["encoder"]["unfreeze_after_epoch"] = trial.suggest_int("unfreeze_after_epoch", 0, 50)
-    
+
     # Set MLflow experiment name for hyperparameter tuning
     config["mlflow"]["experiment_name"] = "lobe_detection_hp_tuning"
-    
+
     # Run training and return best validation loss
     # Q3: Optimize validation loss (recommendation)
     try:
@@ -438,9 +512,9 @@ def objective(trial: optuna.Trial, base_config: dict, mode: str) -> float:
 def main():
     """Main function for hyperparameter tuning."""
     import argparse
-    
+
     project_root = get_project_root(__file__)
-    
+
     parser = argparse.ArgumentParser(description="Hyperparameter tuning with Optuna")
     parser.add_argument(
         "--config",
@@ -481,7 +555,7 @@ def main():
         "--results-csv",
         type=Path,
         default=None,
-        help="Where to write Optuna results CSV (default: data/optuna_results/<study>_<mode>.csv)",
+        help="Where to write Optuna results CSV (default: data/optuna_results/<study>_trials.csv)",
     )
     parser.add_argument(
         "--seed-from-previous-best",
@@ -495,17 +569,37 @@ def main():
         default=False,
         help="Disable seeding from previous best",
     )
-    
+    parser.add_argument(
+        "--import-from",
+        type=Path,
+        action="append",
+        default=[],
+        help="Append rows from an existing tuning CSV into the single history CSV, then exit. "
+             "Example: --import-from data/optuna_results/lobe_detection_hp_tuning_production.csv",
+    )
+
     args = parser.parse_args()
-    
+
+    # Reduce log noise from known, non-actionable warnings
+    warnings.filterwarnings(
+        "ignore",
+        message=r"You are using `torch\.load` with `weights_only=False`.*",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The verbose parameter is deprecated\..*",
+        category=UserWarning,
+    )
+
     # Load base config
     config_path = resolve_path(args.config, project_root)
     with open(config_path) as f:
         base_config = yaml.safe_load(f)
-    
+
     mode = "dev" if args.dev else "production"
     session_meta = _current_session_metadata(base_config, mode)
-    
+
     logger.info("=" * 80)
     logger.info("OPTUNA HYPERPARAMETER TUNING")
     logger.info("=" * 80)
@@ -514,14 +608,14 @@ def main():
     logger.info(f"Study name: {args.study_name}")
     logger.info(f"Pruning: {args.pruning}")
     logger.info("")
-    
+
     # Create study
     # Q5: MedianPruner (recommendation)
     pruner = optuna.pruners.MedianPruner() if args.pruning else None
-    
+
     # Q4: TPESampler (recommendation)
     sampler = optuna.samplers.TPESampler(seed=42)
-    
+
     study = optuna.create_study(
         study_name=args.study_name,
         direction="minimize",  # Minimize validation loss
@@ -534,67 +628,164 @@ def main():
     # Determine CSV path (no DB: CSV is our “memory”)
     if args.results_csv is None:
         results_dir = project_root / "data" / "optuna_results"
-        results_csv = results_dir / f"{args.study_name}_{mode}.csv"
+        results_csv = results_dir / f"{args.study_name}_trials.csv"
     else:
         results_dir = args.results_csv.parent
         results_csv = args.results_csv
 
+    # Always print where we read/write tuning results
+    print(
+        f"[RESULTS] csv_path={results_csv}",
+        flush=True,
+    )
+
+    # Explicit, user-driven import of existing CSV(s) into the single history file
+    if args.import_from:
+        total = 0
+        for src in args.import_from:
+            src_path = resolve_path(src, project_root)
+            n = _append_rows_from_existing_csv(
+                src_csv=src_path,
+                dst_csv=results_csv,
+                default_study_name=args.study_name,
+            )
+            print(f"[IMPORT] source_csv={src_path} appended_rows={n}", flush=True)
+            total += n
+        print(f"[IMPORT] done total_appended_rows={total} destination_csv={results_csv}", flush=True)
+        return
+
+    # Session identifier for append-only CSV
+    session_started_at = dt.datetime.now().isoformat(timespec="seconds")
+    session_id = f"{session_started_at.replace(':','').replace('-','')}_{uuid.uuid4().hex[:8]}"
+
     # Seed from previous best by default (unless explicitly disabled)
-    if (args.seed_from_previous_best and not args.no_seed):
-        # 1) Most recent (latest) CSV for this study/mode
-        latest_best = _load_previous_best(results_csv)
+    seed_summary = {
+        "strategy": "none",
+        "source_csv": str(results_csv),
+        "trial_number": "",
+        "value": "",
+        "params": {},
+        "session_id": "",
+    }
 
-        # 2) Find older/archived candidates for fallback
-        candidates = _find_candidate_csvs(results_dir, args.study_name, mode)
-        compatible_pick = _pick_best_compatible_seed(candidates, session_meta)
+    if args.no_seed:
+        seed_summary["strategy"] = "disabled"
+    elif args.seed_from_previous_best:
+        rows = _load_rows(results_csv)
+        # Filter to same study + mode
+        eligible = [
+            r for r in rows
+            if (r.get("study_name") == args.study_name and r.get("mode") == mode)
+        ]
+        completed = [r for r in eligible if r.get("state") == "COMPLETE"]
 
-        if latest_best is None:
-            if compatible_pick is None:
-                logger.info(f"No previous best found (latest or archive) for seeding. Starting without seed.")
-            else:
-                seed_csv, seed_row = compatible_pick
-                _enqueue_seed_from_row(study, seed_row)
-                logger.info(f"Seeding enabled: using archived compatible run: {seed_csv}")
+        recent_best_row = None
+        if eligible:
+            recent_session_id = max(eligible, key=_row_dt).get("session_id", "")
+            recent_rows = [r for r in completed if r.get("session_id") == recent_session_id]
+            if recent_rows:
+                recent_best_row = min(recent_rows, key=_row_value)
+
+        compatible_completed = [r for r in completed if not _compatibility_mismatches(r, session_meta)]
+        compatible_best_row = min(compatible_completed, key=_row_value) if compatible_completed else None
+
+        if recent_best_row is None:
+            if compatible_best_row is not None:
+                seed_params = _enqueue_seed_from_row(study, compatible_best_row)
+                seed_summary.update(
+                    {
+                        "strategy": "best_compatible",
+                        "trial_number": str(compatible_best_row.get("trial_number", "")),
+                        "value": str(compatible_best_row.get("value", "")),
+                        "params": seed_params,
+                        "session_id": str(compatible_best_row.get("session_id", "")),
+                    }
+                )
         else:
-            mismatches = _compatibility_mismatches(latest_best, session_meta)
+            mismatches = _compatibility_mismatches(recent_best_row, session_meta)
             if not mismatches:
-                _enqueue_seed_from_row(study, latest_best)
-                logger.info(f"Seeding enabled: using most recent best from {results_csv}")
+                seed_params = _enqueue_seed_from_row(study, recent_best_row)
+                seed_summary.update(
+                    {
+                        "strategy": "recent_session",
+                        "trial_number": str(recent_best_row.get("trial_number", "")),
+                        "value": str(recent_best_row.get("value", "")),
+                        "params": seed_params,
+                        "session_id": str(recent_best_row.get("session_id", "")),
+                    }
+                )
             else:
-                # If we can't prompt (e.g. no stdin), default to no seed unless user forces it via input.
                 if not sys.stdin.isatty():
-                    logger.warning("Most recent seed looks incompatible and no TTY available; skipping seeding.")
+                    # No interactive prompt → pick safest option
+                    if compatible_best_row is not None:
+                        seed_params = _enqueue_seed_from_row(study, compatible_best_row)
+                        seed_summary.update(
+                            {
+                                "strategy": "best_compatible",
+                                "trial_number": str(compatible_best_row.get("trial_number", "")),
+                                "value": str(compatible_best_row.get("value", "")),
+                                "params": seed_params,
+                                "session_id": str(compatible_best_row.get("session_id", "")),
+                            }
+                        )
                 else:
-                    choice = _prompt_seed_choice(mismatches, results_csv, latest_best, compatible_pick)
-                    if choice == "use_latest":
-                        _enqueue_seed_from_row(study, latest_best)
-                        logger.info("Seeding enabled: using most recent (forced by user).")
-                    elif choice == "use_archive" and compatible_pick is not None:
-                        seed_csv, seed_row = compatible_pick
-                        _enqueue_seed_from_row(study, seed_row)
-                        logger.info(f"Seeding enabled: using archived compatible run: {seed_csv}")
-                    else:
-                        logger.info("Seeding disabled: cold start selected.")
-    
+                    choice = _prompt_seed_choice_single_file(mismatches, recent_best_row, compatible_best_row)
+                    if choice == "use_recent":
+                        seed_params = _enqueue_seed_from_row(study, recent_best_row)
+                        seed_summary.update(
+                            {
+                                "strategy": "forced_recent",
+                                "trial_number": str(recent_best_row.get("trial_number", "")),
+                                "value": str(recent_best_row.get("value", "")),
+                                "params": seed_params,
+                                "session_id": str(recent_best_row.get("session_id", "")),
+                            }
+                        )
+                    elif choice == "use_compatible" and compatible_best_row is not None:
+                        seed_params = _enqueue_seed_from_row(study, compatible_best_row)
+                        seed_summary.update(
+                            {
+                                "strategy": "best_compatible",
+                                "trial_number": str(compatible_best_row.get("trial_number", "")),
+                                "value": str(compatible_best_row.get("value", "")),
+                                "params": seed_params,
+                                "session_id": str(compatible_best_row.get("session_id", "")),
+                            }
+                        )
+
+    # Always print a single, copy/paste-friendly seed line at session start.
+    print(
+        "[SEED] "
+        f"strategy={seed_summary['strategy']} "
+        f"source_csv={seed_summary['source_csv'] or 'N/A'} "
+        f"from_session_id={seed_summary.get('session_id') or 'N/A'} "
+        f"trial_number={seed_summary['trial_number'] or 'N/A'} "
+        f"value={seed_summary['value'] or 'N/A'} "
+        f"params={seed_summary['params'] or {}} "
+        f"current_session_id={session_id}",
+        flush=True,
+    )
+
     # Run optimization
     logger.info("Starting hyperparameter optimization...")
     logger.info("")
-    
+
     study.optimize(
         lambda trial: objective(trial, base_config, mode),
         n_trials=args.n_trials,
         show_progress_bar=True,
     )
 
-    # Export rich CSV for transparency / future seeding
-    _export_study_csv(study, results_csv, session_meta)
-    logger.info(f"Optuna results CSV written to: {results_csv}")
+    # Append this session's trials to the single history CSV
+    _append_study_trials_csv(
+        study=study,
+        csv_path=results_csv,
+        session_meta=session_meta,
+        session_id=session_id,
+        session_started_at=session_started_at,
+    )
+    logger.info(f"Optuna trials appended to: {results_csv}")
 
-    # Also keep a timestamped archive copy so we can seed from older compatible sessions.
-    archive_csv = _archive_csv_path(results_csv)
-    _export_study_csv(study, archive_csv, session_meta)
-    logger.info(f"Optuna results CSV archived to: {archive_csv}")
-    
     # Print results
     logger.info("")
     logger.info("=" * 80)
@@ -612,7 +803,7 @@ def main():
         logger.info(f"    {key}: {value}")
     logger.info("")
     logger.info("=" * 80)
-    
+
     # Save best parameters to file (real YAML)
     best_params_path = project_root / "configs" / "best_hyperparameters.yaml"
     best_params = {
@@ -623,7 +814,7 @@ def main():
 
     with open(best_params_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(best_params, f, sort_keys=False)
-    
+
     logger.info(f"Best hyperparameters saved to: {best_params_path}")
     logger.info("")
     logger.info("To retrain with best hyperparameters, update training_config.yaml")

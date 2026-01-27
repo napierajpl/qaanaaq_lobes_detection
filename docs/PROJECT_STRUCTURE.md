@@ -123,4 +123,3 @@ qaanaaq_lobes_detection/
 2. Set up `.gitignore` for data directories
 3. Initialize Poetry project with dependencies
 4. Create initial config file templates
-

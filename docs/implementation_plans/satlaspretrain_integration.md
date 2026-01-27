@@ -36,18 +36,18 @@ model:
   architecture: "satlaspretrain_unet"  # Options: "unet", "satlaspretrain_unet", future options
   in_channels: 5
   out_channels: 1
-  
+
   # Architecture-specific parameters
   encoder:
     name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
     pretrained: true
     freeze_encoder: true  # Freeze encoder initially, unfreeze after convergence
     unfreeze_after_epoch: 10  # Unfreeze encoder after this epoch (0 = never unfreeze)
-  
+
   # UNet-specific (only used if architecture == "unet")
   base_channels: 64
   dropout: 0.2
-  
+
   # SatlasPretrain-specific (only used if architecture == "satlaspretrain_unet")
   decoder_dropout: 0.2  # Dropout in decoder only
 ```
@@ -87,15 +87,15 @@ from src.models.satlaspretrain_unet import SatlasPretrainUNet
 def create_model(config: Dict[str, Any]) -> nn.Module:
     """
     Create model based on configuration.
-    
+
     Args:
         config: Model configuration dictionary
-        
+
     Returns:
         Initialized model
     """
     architecture = config.get("architecture", "unet").lower()
-    
+
     if architecture == "unet":
         return UNet(
             in_channels=config.get("in_channels", 5),
@@ -176,7 +176,7 @@ class InputAdapter(nn.Module):
         super().__init__()
         # Option 1: Simple projection
         self.adapter = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        
+
         # Option 2: Learnable fusion (better)
         # Process RGB and DEM+Slope separately, then fuse
         self.rgb_conv = nn.Conv2d(3, 3, kernel_size=1)
@@ -293,7 +293,7 @@ model:
 - **Mitigation**: Test in isolated environment, pin versions in `pyproject.toml`
 
 ### Risk 4: Memory issues (larger models)
-- **Mitigation**: 
+- **Mitigation**:
   - Use ResNet50 instead of ResNet152 initially
   - Reduce batch size if needed
   - Use gradient checkpointing

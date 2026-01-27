@@ -51,7 +51,7 @@ Comparison between two loss function experiments to address the extreme class im
    - Model went from 15x worse to 7.5x worse than baseline
    - Still not beating baseline, but getting closer
 
-4. **Training Stability**: 
+4. **Training Stability**:
    - Focal Loss shows more stable training (less oscillation)
    - Val MAE fluctuates but trends better than encouragement loss
 
@@ -192,6 +192,6 @@ Based on this analysis, potential solutions:
 
 ## Recommendation
 
-**Focal Loss is a step in the right direction**, but **not the complete solution**. The model is learning better, but still can't detect lobes. 
+**Focal Loss is a step in the right direction**, but **not the complete solution**. The model is learning better, but still can't detect lobes.
 
 **Priority**: Focus on **breaking the threshold barrier** rather than just improving regression accuracy. Consider combining Focal Loss with a detection-focused loss (IoU/Dice) or switching to a binary classification approach.

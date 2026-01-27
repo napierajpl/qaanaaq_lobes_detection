@@ -179,7 +179,7 @@ max_error = 20.0  # Changed from 10.0
 
 ### Positive Outcomes
 
-1. **IoU Improvement**: 
+1. **IoU Improvement**:
    - Current: 0.0647
    - Expected: 0.1-0.3 (model can now hit larger target)
    - **Reason**: 4x larger target area = more opportunities

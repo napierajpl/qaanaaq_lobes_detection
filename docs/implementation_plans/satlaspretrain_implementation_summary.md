@@ -57,7 +57,7 @@ model = create_model(config["model"])
 ```yaml
 model:
   architecture: "unet"  # or "satlaspretrain_unet"
-  
+
   # For SatlasPretrain:
   encoder:
     name: "resnet50"

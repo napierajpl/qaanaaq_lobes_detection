@@ -12,7 +12,7 @@ The tile filtering step removes low-quality tiles from the training dataset to i
 
 **Solution**: Tiles with less than 1% valid RGB pixels are automatically excluded.
 
-**Rationale**: 
+**Rationale**:
 - Training on empty tiles provides no useful information
 - Wastes computational resources
 - Can confuse the model
@@ -27,7 +27,7 @@ The tile filtering step removes low-quality tiles from the training dataset to i
 
 **Default Behavior**: Currently set to **exclude** background-only tiles (`--exclude-background` flag).
 
-**Recommendation**: 
+**Recommendation**:
 - **Start with exclusion** for initial training (faster convergence, better focus on positive examples)
 - **Experiment with inclusion** if model struggles with false positives (needs better background understanding)
 

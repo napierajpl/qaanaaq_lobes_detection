@@ -1,4 +1,4 @@
 Check linting
 Check changes
-Commit with description 
+Commit with description
 Push

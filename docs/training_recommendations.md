@@ -35,7 +35,7 @@
 - U-Net models often need 100-150 epochs to converge
 - With early stopping, you can train longer without wasting time
 
-**Recommendation**: 
+**Recommendation**:
 - **Start with 100 epochs** for dev mode
 - Add **early stopping** (stop if no improvement for 10-15 epochs)
 - This gives you flexibility without wasting time

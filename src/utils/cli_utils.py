@@ -5,11 +5,11 @@ from typing import Optional
 
 class BaseCLIParser:
     """Base class for CLI argument parsing with common patterns."""
-    
+
     def __init__(self, description: str, project_root: Path):
         """
         Initialize base CLI parser.
-        
+
         Args:
             description: Description of the script
             project_root: Project root directory
@@ -19,7 +19,7 @@ class BaseCLIParser:
             description=description,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-    
+
     def add_input_output_args(
         self,
         default_input: Path,
@@ -29,7 +29,7 @@ class BaseCLIParser:
     ) -> None:
         """
         Add common input and output file arguments.
-        
+
         Args:
             default_input: Default input file path
             default_output: Default output file path
@@ -40,12 +40,12 @@ class BaseCLIParser:
             input_relative = default_input.relative_to(self.project_root)
         except ValueError:
             input_relative = default_input
-        
+
         try:
             output_relative = default_output.relative_to(self.project_root)
         except ValueError:
             output_relative = default_output
-        
+
         self.parser.add_argument(
             "-i",
             "--input",
@@ -53,7 +53,7 @@ class BaseCLIParser:
             default=default_input,
             help=input_help or f"Input file path (default: {input_relative})",
         )
-        
+
         self.parser.add_argument(
             "-o",
             "--output",
@@ -61,7 +61,7 @@ class BaseCLIParser:
             default=default_output,
             help=output_help or f"Output file path (default: {output_relative})",
         )
-    
+
     def add_reference_raster_arg(
         self,
         default_reference: Path,
@@ -69,7 +69,7 @@ class BaseCLIParser:
     ) -> None:
         """
         Add reference raster argument with optional flag.
-        
+
         Args:
             default_reference: Default reference raster path
             help_text: Help text for reference argument
@@ -78,7 +78,7 @@ class BaseCLIParser:
             reference_relative = default_reference.relative_to(self.project_root)
         except ValueError:
             reference_relative = default_reference
-        
+
         self.parser.add_argument(
             "-r",
             "--reference",
@@ -86,17 +86,17 @@ class BaseCLIParser:
             default=default_reference,
             help=help_text or f"Reference raster for extent/resolution (default: {reference_relative})",
         )
-        
+
         self.parser.add_argument(
             "--no-reference",
             action="store_true",
             help="Ignore reference raster even if it exists",
         )
-    
+
     def parse_args(self) -> argparse.Namespace:
         """Parse command-line arguments."""
         return self.parser.parse_args()
-    
+
     def set_epilog(self, examples: str) -> None:
         """Set epilog with usage examples."""
         self.parser.epilog = examples

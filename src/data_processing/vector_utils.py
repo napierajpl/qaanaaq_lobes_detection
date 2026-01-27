@@ -10,7 +10,7 @@ from rasterio.transform import from_bounds
 
 class Rasterizer:
     """Rasterizes vector geometries to raster format."""
-    
+
     def __init__(
         self,
         burn_value: int = 1,
@@ -19,7 +19,7 @@ class Rasterizer:
     ):
         """
         Initialize rasterizer with default settings.
-        
+
         Args:
             burn_value: Value to burn for vector features
             nodata: NoData value for output raster
@@ -28,34 +28,34 @@ class Rasterizer:
         self.burn_value = burn_value
         self.nodata = nodata
         self.all_touched = all_touched
-    
+
     def load_vector(self, vector_path: Path) -> gpd.GeoDataFrame:
         """Load and validate vector file."""
         vector_path = Path(vector_path)
-        
+
         if not vector_path.exists():
             raise FileNotFoundError(f"Vector file not found: {vector_path}")
-        
+
         gdf = gpd.read_file(vector_path)
-        
+
         if gdf.empty:
             raise ValueError(f"Vector file is empty: {vector_path}")
-        
+
         return gdf
-    
+
     def get_reference_info(
         self, reference_raster_path: Path
     ) -> Tuple[Tuple[float, float, float, float], Tuple[int, int], rasterio.crs.CRS, rasterio.Affine]:
         """Extract extent, shape, CRS, and transform from a reference raster."""
         with rasterio.open(reference_raster_path) as src:
             return src.bounds, src.shape, src.crs, src.transform
-    
+
     def reproject_if_needed(self, gdf: gpd.GeoDataFrame, target_crs: rasterio.crs.CRS) -> gpd.GeoDataFrame:
         """Reproject GeoDataFrame if CRS doesn't match target."""
         if gdf.crs != target_crs:
             return gdf.to_crs(target_crs)
         return gdf
-    
+
     def calculate_raster_specs_from_bounds(
         self, bounds: Tuple[float, float, float, float], crs: rasterio.crs.CRS, resolution: float
     ) -> Tuple[int, int, rasterio.Affine]:
@@ -64,7 +64,7 @@ class Rasterizer:
         height = int((bounds[3] - bounds[1]) / resolution)
         transform = from_bounds(*bounds, width, height)
         return width, height, transform
-    
+
     def prepare_raster_specs(
         self,
         gdf: gpd.GeoDataFrame,
@@ -79,23 +79,23 @@ class Rasterizer:
         else:
             bounds = gdf.total_bounds
             crs = gdf.crs
-            
+
             if crs is None:
                 raise ValueError("Vector file has no CRS defined")
-            
+
             if resolution is None:
                 resolution = 1.0
-            
+
             width, height, transform = self.calculate_raster_specs_from_bounds(bounds, crs, resolution)
-        
+
         return gdf, bounds, (width, height), crs, transform
-    
+
     def create_raster_array(
         self, gdf: gpd.GeoDataFrame, height: int, width: int, transform: rasterio.Affine
     ) -> np.ndarray:
         """Create raster array from vector geometries."""
         shapes = ((geom, self.burn_value) for geom in gdf.geometry)
-        
+
         return features.rasterize(
             shapes,
             out_shape=(height, width),
@@ -104,7 +104,7 @@ class Rasterizer:
             all_touched=self.all_touched,
             dtype=np.uint8,
         )
-    
+
     def write_raster(
         self,
         output_path: Path,
@@ -116,7 +116,7 @@ class Rasterizer:
     ) -> None:
         """Write raster array to GeoTIFF file."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         with rasterio.open(
             output_path,
             'w',
@@ -131,7 +131,7 @@ class Rasterizer:
             compress='lzw',
         ) as dst:
             dst.write(raster, 1)
-    
+
     def rasterize(
         self,
         vector_path: Path,
@@ -141,7 +141,7 @@ class Rasterizer:
     ) -> None:
         """
         Rasterize a vector layer to a GeoTIFF file.
-        
+
         Args:
             vector_path: Path to input vector file (shapefile, GeoJSON, etc.)
             output_path: Path to output raster file
@@ -165,7 +165,7 @@ def rasterize_vector(
 ) -> None:
     """
     Convenience function for rasterizing vectors.
-    
+
     Args:
         vector_path: Path to input vector file (shapefile, GeoJSON, etc.)
         output_path: Path to output raster file
@@ -177,4 +177,3 @@ def rasterize_vector(
     """
     rasterizer = Rasterizer(burn_value=burn_value, nodata=nodata, all_touched=all_touched)
     rasterizer.rasterize(vector_path, output_path, reference_raster_path, resolution)
-

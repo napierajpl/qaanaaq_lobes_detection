@@ -21,7 +21,7 @@ def generate_tile_index_shapefile(
 ) -> None:
     """
     Generate shapefile from tile registry for QGIS visualization.
-    
+
     Args:
         registry: TileRegistry instance
         output_path: Path to output shapefile (without .shp extension)
@@ -29,20 +29,20 @@ def generate_tile_index_shapefile(
         include_all_tiles: If True, include all tiles; if False, only valid tiles
     """
     logger.info(f"Generating tile index shapefile: {output_path}")
-    
+
     # Get tiles
     tiles = registry.get_all_tiles(filter_valid=not include_all_tiles)
     metadata = registry.get_metadata()
-    
+
     # Create GeoDataFrame
     geometries = []
     attributes = []
-    
+
     for tile in tiles:
         bounds = tile.get("geographic_bounds", {})
         if not bounds:
             continue
-        
+
         # Create polygon from bounds
         geom = box(
             bounds["minx"],
@@ -51,11 +51,11 @@ def generate_tile_index_shapefile(
             bounds["maxy"],
         )
         geometries.append(geom)
-        
+
         # Extract tile number for label (e.g., "tile_10020" -> "10020")
         tile_id = tile.get("tile_id", "")
         tile_label = tile_id.replace("tile_", "") if tile_id.startswith("tile_") else tile_id
-        
+
         # Build attributes
         attrs = {
             "tile_id": tile_id,
@@ -66,16 +66,16 @@ def generate_tile_index_shapefile(
             "has_targets": int(tile.get("filtering", {}).get("has_targets", False)),
             "split": tile.get("split", ""),
         }
-        
+
         attributes.append(attrs)
-    
+
     if not geometries:
         logger.warning("No tiles with geographic bounds found")
         return
-    
+
     # Create GeoDataFrame
     gdf = gpd.GeoDataFrame(attributes, geometry=geometries)
-    
+
     # Set CRS from metadata
     crs_str = metadata.get("crs")
     if crs_str:
@@ -84,25 +84,25 @@ def generate_tile_index_shapefile(
         except (ValueError, Exception) as e:
             # CRS setting can fail for various reasons (invalid CRS, geopandas version issues, etc.)
             logger.warning(f"Could not set CRS {crs_str}: {e}")
-    
+
     # Ensure output directory exists
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Save shapefile
     gdf.to_file(output_path, driver="ESRI Shapefile")
     logger.info(f"Saved shapefile with {len(gdf)} tiles to {output_path}")
-    
+
     # Generate QGIS style file (QML) for better visualization
     qml_path = Path(str(output_path).replace(".shp", ".qml"))
     _generate_qml_style_file(qml_path, label_field)
     logger.info(f"Generated QGIS style file: {qml_path}")
-    
+
     # Log summary
     if "is_valid" in gdf.columns:
         valid_count = gdf["is_valid"].sum()
         logger.info(f"  Valid tiles: {valid_count}/{len(gdf)}")
-    
+
     if "split" in gdf.columns:
         split_counts = gdf["split"].value_counts()
         logger.info(f"  Split distribution: {dict(split_counts)}")
@@ -112,7 +112,7 @@ def _generate_qml_style_file(qml_path: Path, label_field: str) -> None:
     """
     Generate QGIS style file (QML) with labels and semi-transparent styling
     to make tile overlap visible.
-    
+
     Args:
         qml_path: Path to output QML file
         label_field: Field name to use for labels
@@ -177,7 +177,7 @@ def _generate_qml_style_file(qml_path: Path, label_field: str) -> None:
   <layerGeometryType>2</layerGeometryType>
 </qgis>
 '''
-    
+
     qml_path.parent.mkdir(parents=True, exist_ok=True)
     with open(qml_path, 'w', encoding='utf-8') as f:
         f.write(qml_content)

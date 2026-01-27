@@ -48,7 +48,7 @@ Then open http://localhost:5000 in your browser.
    ```python
    import mlflow
    mlflow.set_experiment("lobe_detection")
-   
+
    with mlflow.start_run(run_name="unet_resnet34_v1"):
        # Log parameters
        mlflow.log_params({
@@ -56,19 +56,19 @@ Then open http://localhost:5000 in your browser.
            "batch_size": 16,
            "architecture": "unet_resnet34"
        })
-       
+
        # Training loop
        for epoch in range(num_epochs):
            train_loss = train_one_epoch(...)
            val_metrics = validate(...)
-           
+
            # Log metrics
            mlflow.log_metrics({
                "train_loss": train_loss,
                "val_loss": val_metrics["loss"],
                "val_mae": val_metrics["mae"]
            }, step=epoch)
-       
+
        # Save model
        mlflow.pytorch.log_model(model, "model")
    ```
@@ -82,10 +82,10 @@ Then open http://localhost:5000 in your browser.
 3. **Load Model for Inference**
    ```python
    import mlflow.pytorch
-   
+
    # By run_id
    model = mlflow.pytorch.load_model("runs:/<run_id>/model")
-   
+
    # From model registry (best model)
    model = mlflow.pytorch.load_model("models:/lobe_detection/Production")
    ```

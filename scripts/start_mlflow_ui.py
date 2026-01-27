@@ -30,7 +30,7 @@ def main():
 
     # Get mlruns directory
     mlruns_dir = project_root / "mlruns"
-    
+
     if not mlruns_dir.exists():
         print(f"Error: mlruns directory not found at {mlruns_dir}")
         print("Run a training script first to create MLflow runs.")

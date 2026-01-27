@@ -10,22 +10,22 @@ When combining raster layers with different resolutions (e.g., RGB imagery at 0.
 
 **Bilinear (Recommended - Default)**
 - **Why**: Smooth interpolation that preserves terrain characteristics
-- **Pros**: 
+- **Pros**:
   - Smooth continuous surface
   - No overshooting/undershooting (doesn't create artificial peaks/valleys)
   - Preserves general terrain shape
   - Computationally efficient
   - Standard practice in GIS and remote sensing
-- **Cons**: 
+- **Cons**:
   - Slightly less smooth than cubic methods
 - **Best for**: Most terrain types, general use
 
 **Cubic (Alternative)**
 - **Why**: Even smoother interpolation
-- **Pros**: 
+- **Pros**:
   - Very smooth surface
   - Better for very smooth terrain
-- **Cons**: 
+- **Cons**:
   - Can overshoot/undershoot values (create peaks/valleys that don't exist)
   - May introduce artifacts in steep terrain
   - More computationally expensive
@@ -33,7 +33,7 @@ When combining raster layers with different resolutions (e.g., RGB imagery at 0.
 
 **Nearest Neighbor (NOT Recommended)**
 - **Why**: Preserves exact values
-- **Cons**: 
+- **Cons**:
   - Creates blocky, stepped appearance
   - Not suitable for continuous elevation data
   - Will create artifacts in the final model

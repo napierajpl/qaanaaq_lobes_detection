@@ -5,11 +5,11 @@ model:
   architecture: "satlaspretrain_unet"
   in_channels: 5
   out_channels: 1
-  
+
   # UNet-specific parameters (only used if architecture == "unet")
   base_channels: 64
   dropout: 0.2  # Dropout for regularization (prevents overfitting)
-  
+
   # SatlasPretrain-specific parameters (only used if architecture == "satlaspretrain_unet")
   encoder:
     name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
@@ -86,7 +86,7 @@ paths:
     features_dir: "data/processed/tiles/dev/train/features"
     targets_dir: "data/processed/tiles/dev/train/targets"
     models_dir: "data/models/dev"
-  
+
   # Production mode (full dataset)
   production:
     filtered_tiles: "data/processed/tiles/train/filtered_tiles.json"

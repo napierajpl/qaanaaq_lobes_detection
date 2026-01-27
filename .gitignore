@@ -51,3 +51,6 @@ htmlcov/
 # MLflow
 mlruns/
 mlartifacts/
+
+# Optuna (legacy output folder; results now go under data/)
+optuna_results/

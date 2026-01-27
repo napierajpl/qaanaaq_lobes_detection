@@ -85,7 +85,7 @@
 ## Model Design Details
 
 ### Input Processing
-- **Normalization**: 
+- **Normalization**:
   - RGB: Normalize to [0, 1] (divide by 255)
   - DEM: Standardize (mean=0, std=1) or min-max normalize
   - Slope: Standardize or min-max normalize
@@ -429,7 +429,7 @@ training:
   optimizer: "Adam"
   loss_function: "smooth_l1"
   weight_decay: 0.0001
-  
+
 data:
   train_split: 0.7
   val_split: 0.15
@@ -538,22 +538,22 @@ with mlflow.start_run(run_name="unet_resnet34_baseline"):
         "batch_size": 16,
         "architecture": "unet_resnet34"
     })
-    
+
     # Training loop
     for epoch in range(num_epochs):
         train_loss = train_one_epoch(...)
         val_loss, val_mae = validate(...)
-        
+
         # Log metrics
         mlflow.log_metrics({
             "train_loss": train_loss,
             "val_loss": val_loss,
             "val_mae": val_mae
         }, step=epoch)
-    
+
     # Save model
     mlflow.pytorch.log_model(model, "model")
-    
+
     # Save artifacts
     mlflow.log_artifact("predictions.png", "visualizations")
 ```

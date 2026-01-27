@@ -5,6 +5,7 @@ Train CNN model for lobe detection.
 
 import logging
 import sys
+import warnings
 import yaml
 from pathlib import Path
 from typing import Optional
@@ -54,6 +55,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reduce log noise from known, non-actionable warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r"You are using `torch\.load` with `weights_only=False`.*",
+    category=FutureWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"The verbose parameter is deprecated\..*",
+    category=UserWarning,
+)
+
 
 def train_model_with_config(
     config: dict,
@@ -63,47 +76,47 @@ def train_model_with_config(
 ) -> float:
     """
     Train model with given configuration.
-    
+
     This function can be called directly or used by Optuna for hyperparameter tuning.
-    
+
     Args:
         config: Training configuration dictionary
         mode: "dev" or "production"
         trial: Optional Optuna trial object (for pruning)
         run_name: Optional MLflow run name
-        
+
     Returns:
         Best validation loss
     """
     from pathlib import Path
-    
+
     project_root = get_project_root(Path(__file__))
-    
+
     # Determine paths
     paths = config["paths"][mode]
-    
+
     filtered_tiles_path = resolve_path(Path(paths["filtered_tiles"]), project_root)
     features_dir = resolve_path(Path(paths["features_dir"]), project_root)
     targets_dir = resolve_path(Path(paths["targets_dir"]), project_root)
     models_dir = resolve_path(Path(paths["models_dir"]), project_root)
-    
+
     logger.info("=== Training Configuration ===")
     logger.info(f"Mode: {mode}")
     logger.info(f"Filtered tiles: {filtered_tiles_path}")
     logger.info(f"Features dir: {features_dir}")
     logger.info(f"Targets dir: {targets_dir}")
     logger.info(f"Models dir: {models_dir}")
-    
+
     # Load filtered tiles
     logger.info("Loading filtered tiles...")
     all_tiles = load_filtered_tiles(filtered_tiles_path)
     logger.info(f"Total tiles: {len(all_tiles)}")
-    
+
     # Split into train/val/test
     train_split = config["data"]["train_split"]
     val_split = config["data"]["val_split"]
     test_split = config["data"]["test_split"]
-    
+
     # Validate splits
     split_sum = train_split + val_split + test_split
     if abs(split_sum - 1.0) >= 1e-6:
@@ -111,7 +124,7 @@ def train_model_with_config(
             f"Data splits must sum to 1.0, got {split_sum:.6f}. "
             f"train={train_split}, val={val_split}, test={test_split}"
         )
-    
+
     train_tiles, val_tiles, test_tiles = create_data_splits(
         all_tiles,
         train_split=train_split,
@@ -119,7 +132,7 @@ def train_model_with_config(
         test_split=test_split,
     )
     logger.info(f"Train: {len(train_tiles)}, Val: {len(val_tiles)}, Test: {len(test_tiles)}")
-    
+
     # Compute normalization statistics from training set
     logger.info("Computing normalization statistics...")
     train_feature_paths = [features_dir / tile["features_path"] for tile in train_tiles]
@@ -128,15 +141,15 @@ def train_model_with_config(
     dem_std = normalization_stats.get('dem', {}).get('std', 'N/A')
     slope_mean = normalization_stats.get('slope', {}).get('mean', 'N/A')
     slope_std = normalization_stats.get('slope', {}).get('std', 'N/A')
-    
+
     dem_mean_str = f"{dem_mean:.2f}" if isinstance(dem_mean, (int, float)) else str(dem_mean)
     dem_std_str = f"{dem_std:.2f}" if isinstance(dem_std, (int, float)) else str(dem_std)
     slope_mean_str = f"{slope_mean:.2f}" if isinstance(slope_mean, (int, float)) else str(slope_mean)
     slope_std_str = f"{slope_std:.2f}" if isinstance(slope_std, (int, float)) else str(slope_std)
-    
+
     logger.info(f"DEM stats: mean={dem_mean_str}, std={dem_std_str}")
     logger.info(f"Slope stats: mean={slope_mean_str}, std={slope_std_str}")
-    
+
     # Create data loaders
     logger.info("Creating data loaders...")
     train_loader, val_loader = create_dataloaders(
@@ -147,20 +160,20 @@ def train_model_with_config(
         normalization_stats,
         batch_size=config["training"]["batch_size"],
     )
-    
+
     # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-    
+
     # Create model using factory
     logger.info("Creating model...")
     model = create_model(config["model"]).to(device)
-    
+
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {num_params:,} (trainable: {trainable_params:,})")
-    
+
     # Log architecture info
     architecture = config["model"].get("architecture", "unet")
     logger.info(f"Architecture: {architecture}")
@@ -169,10 +182,10 @@ def train_model_with_config(
         logger.info(f"Encoder: {encoder_config.get('name', 'unknown')} "
                    f"(pretrained={encoder_config.get('pretrained', False)}, "
                    f"frozen={encoder_config.get('freeze_encoder', False)})")
-    
+
     # Setup loss and optimizer
     iou_threshold = config["training"].get("iou_threshold", 5.0)
-    
+
     loss_function = config["training"]["loss_function"]
     if loss_function == "smooth_l1":
         criterion = SmoothL1Loss()
@@ -225,13 +238,13 @@ def train_model_with_config(
                    f"iou_weight={iou_weight}, regression_weight={regression_weight}, threshold={iou_threshold}")
     else:
         raise ValueError(f"Unknown loss function: {loss_function}")
-    
+
     optimizer = optim.Adam(
         model.parameters(),
         lr=config["training"]["learning_rate"],
         weight_decay=config["training"]["weight_decay"],
     )
-    
+
     # Setup learning rate scheduler
     lr_scheduler = None
     lr_scheduler_config = config["training"].get("lr_scheduler")
@@ -243,35 +256,34 @@ def train_model_with_config(
                 factor=config["training"].get("lr_scheduler_factor", 0.5),
                 patience=config["training"].get("lr_scheduler_patience", 10),
                 min_lr=config["training"].get("lr_scheduler_min_lr", 1e-6),
-                verbose=True,
             )
             patience = config['training'].get('lr_scheduler_patience', 10)
             factor = config['training'].get('lr_scheduler_factor', 0.5)
             logger.info(f"Using ReduceLROnPlateau scheduler (patience={patience}, factor={factor})")
         else:
             logger.warning(f"Unknown LR scheduler '{lr_scheduler_config}', ignoring")
-    
+
     # Setup early stopping
     early_stopping_patience = config["training"].get("early_stopping_patience")
     early_stopping_min_delta = config["training"].get("early_stopping_min_delta", 0.0)
     early_stopping_counter = 0
     best_val_loss_for_early_stop = float("inf")
-    
+
     if early_stopping_patience:
         logger.info(f"Early stopping enabled (patience={early_stopping_patience}, min_delta={early_stopping_min_delta})")
-    
+
     # Gradient clipping
     max_grad_norm = config["training"].get("max_grad_norm")
     if max_grad_norm:
         logger.info(f"Gradient clipping enabled (max_norm={max_grad_norm})")
-    
+
     # Setup MLflow
     mlflow_config = config["mlflow"]
     setup_mlflow_experiment(mlflow_config["experiment_name"], mlflow_config.get("tracking_uri"))
-    
+
     if run_name is None:
         run_name = f"unet_baseline_{mode}"
-    
+
     with mlflow.start_run(run_name=run_name):
 
         # Log config
@@ -281,7 +293,7 @@ def train_model_with_config(
         mlflow.log_param("trainable_params", trainable_params)
         mlflow.log_param("num_train_tiles", len(train_tiles))
         mlflow.log_param("num_val_tiles", len(val_tiles))
-        
+
         # Log Optuna trial info if available
         if trial is not None:
             mlflow.set_tag("optuna_trial", str(trial.number))
@@ -320,7 +332,7 @@ def train_model_with_config(
             except Exception:
                 # Never fail training because of metadata capture
                 pass
-        
+
         # Log architecture info
         mlflow.log_param("model.architecture", architecture)
         if architecture == "satlaspretrain_unet":
@@ -329,11 +341,11 @@ def train_model_with_config(
             mlflow.log_param("model.encoder_pretrained", encoder_config.get("pretrained", False))
             mlflow.log_param("model.encoder_frozen", encoder_config.get("freeze_encoder", False))
             mlflow.log_param("model.encoder_unfreeze_epoch", encoder_config.get("unfreeze_after_epoch", 0))
-        
+
         # Detect and log proximity map parameters from target tiles
         proximity_max_value = None
         proximity_max_distance = None
-        
+
         targets_path_str = str(targets_dir)
         if "proximity10px" in targets_path_str or "proximity10" in targets_path_str:
             proximity_max_value = 10
@@ -352,7 +364,7 @@ def train_model_with_config(
                         with rasterio.open(tile_path) as raster_src:
                             data = raster_src.read(1)
                             max_values.append(data.max())
-                
+
                 if max_values:
                     detected_max = int(max(max_values))
                     if detected_max <= 10:
@@ -366,17 +378,17 @@ def train_model_with_config(
                         proximity_max_distance = detected_max
             except (rasterio.RasterioIOError, ValueError, KeyError) as e:
                 logger.warning(f"Could not detect proximity map parameters: {e}")
-        
+
         if proximity_max_value is not None:
             mlflow.log_param("data.proximity_max_value", proximity_max_value)
             mlflow.log_param("data.proximity_max_distance", proximity_max_distance)
             logger.info(f"Detected proximity map: max_value={proximity_max_value}, max_distance={proximity_max_distance}")
-        
+
         # Training loop
         best_val_loss = float("inf")
         best_model_path = models_dir / "best_model.pt"
         iou_threshold = config["training"].get("iou_threshold", 5.0)
-        
+
         # Track metrics across epochs for visualization
         metrics_history = {
             "epochs": [],
@@ -387,56 +399,56 @@ def train_model_with_config(
             "improvement_percent": [],
         }
         baseline_mae = None
-        
+
         logger.info("=== Starting Training ===")
         logger.info(f"IoU threshold: {iou_threshold}")
-        
+
         # Encoder unfreezing configuration
         encoder_config = config["model"].get("encoder", {})
         unfreeze_after_epoch = encoder_config.get("unfreeze_after_epoch", 0)
         encoder_unfrozen = False
-        
+
         for epoch in range(1, config["training"]["num_epochs"] + 1):
             # Unfreeze encoder if specified epoch reached
-            if (unfreeze_after_epoch > 0 and 
-                epoch == unfreeze_after_epoch and 
-                hasattr(model, 'unfreeze_encoder') and 
+            if (unfreeze_after_epoch > 0 and
+                epoch == unfreeze_after_epoch and
+                hasattr(model, 'unfreeze_encoder') and
                 not encoder_unfrozen):
                 logger.info(f"Unfreezing encoder at epoch {epoch}")
                 model.unfreeze_encoder()
                 encoder_unfrozen = True
-                
+
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = param_group['lr'] * 0.1
                 logger.info(f"Reduced learning rate to {optimizer.param_groups[0]['lr']:.6f} for fine-tuning")
-            
+
             # Train
             train_metrics = train_one_epoch(
                 model, train_loader, criterion, optimizer, device, epoch,
                 max_grad_norm=max_grad_norm
             )
-            
+
             # Validate
             val_metrics = validate(
-                model, val_loader, criterion, device, epoch, 
+                model, val_loader, criterion, device, epoch,
                 iou_threshold=iou_threshold,
                 val_tile_list=val_tiles
             )
-            
+
             # Track metrics
             metrics_history["epochs"].append(epoch)
             metrics_history["train_loss"].append(train_metrics["train_loss"])
             metrics_history["val_loss"].append(val_metrics["val_loss"])
             metrics_history["val_mae"].append(val_metrics["val_mae"])
             metrics_history["val_iou"].append(val_metrics["val_iou"])
-            
+
             if "val_baseline_mae" in val_metrics:
                 if baseline_mae is None:
                     baseline_mae = val_metrics["val_baseline_mae"]
                 improvement = val_metrics["val_improvement_over_baseline"]
                 improvement_percent = (improvement / baseline_mae) * 100 if baseline_mae > 0 else 0.0
                 metrics_history["improvement_percent"].append(improvement_percent)
-            
+
             # Report to Optuna for pruning (Q7: Use both early stopping mechanisms)
             if trial is not None:
                 if optuna is None:
@@ -464,13 +476,13 @@ def train_model_with_config(
                         )
                         print(f"[MLFLOW] tracking_uri={tracking_uri}", flush=True)
                     raise optuna.TrialPruned()
-            
+
             # Update learning rate scheduler
             if lr_scheduler:
                 lr_scheduler.step(val_metrics["val_loss"])
                 current_lr = optimizer.param_groups[0]['lr']
                 mlflow.log_metric("learning_rate", current_lr, step=epoch)
-            
+
             # Early stopping check
             if early_stopping_patience:
                 if val_metrics["val_loss"] < best_val_loss_for_early_stop - early_stopping_min_delta:
@@ -478,7 +490,7 @@ def train_model_with_config(
                     early_stopping_counter = 0
                 else:
                     early_stopping_counter += 1
-                
+
                 if early_stopping_counter >= early_stopping_patience:
                     logger.info(f"[EARLY STOP] No improvement for {early_stopping_patience} epochs. Stopping training.")
                     print(
@@ -489,11 +501,11 @@ def train_model_with_config(
                         flush=True,
                     )
                     break
-            
+
             # Log to MLflow
             all_metrics = {**train_metrics, **val_metrics}
             log_metrics(all_metrics, step=epoch)
-            
+
             # Save best model
             if val_metrics["val_loss"] < best_val_loss:
                 prev_best = best_val_loss
@@ -531,7 +543,7 @@ def train_model_with_config(
                     f"improvement={improvement:+.6f} ({pct:+.1f}%)"
                 )
             print(summary, flush=True)
-        
+
         # Log final metrics to MLflow
         mlflow.log_metric("best_val_loss", best_val_loss)
         mlflow.log_metric("best_val_mae", best_val_mae)
@@ -564,32 +576,32 @@ def train_model_with_config(
                     flush=True,
                 )
             print(f"[MLFLOW] tracking_uri={tracking_uri}", flush=True)
-        
+
         # Create and log visualization plots (skip for Optuna trials to save time)
         if trial is None:
             logger.info("=== Creating Training Plots ===")
             figures = create_training_plots(metrics_history, baseline_mae)
-            
+
             for plot_name, fig in figures.items():
                 mlflow.log_figure(fig, f"plots/{plot_name}.png")
                 plt.close(fig)
                 logger.info(f"Logged {plot_name} plot to MLflow")
-        
+
         # Save model to MLflow (skip for Optuna trials to save time)
         if mlflow_config.get("log_model", True) and trial is None:
             model_size_mb = save_model(model, "model")
             if model_size_mb > 0:
                 logger.info(f"Model saved to MLflow (size: {model_size_mb:.2f} MB)")
-    
+
     return best_val_loss
 
 
 def main():
     """Main training function."""
     import argparse
-    
+
     project_root = get_project_root(__file__)
-    
+
     parser = argparse.ArgumentParser(description="Train CNN model for lobe detection")
     parser.add_argument(
         "--config",
@@ -608,17 +620,17 @@ def main():
         default=None,
         help="MLflow run name (default: auto-generated)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Load config
     config_path = resolve_path(args.config, project_root)
     with open(config_path) as f:
         config = yaml.safe_load(f)
-    
+
     # Determine mode
     mode = "dev" if args.dev else "production"
-    
+
     # Call the extracted training function
     train_model_with_config(
         config=config,

@@ -13,25 +13,25 @@ logger = logging.getLogger(__name__)
 def create_model(config: Dict[str, Any]) -> nn.Module:
     """
     Create model based on configuration.
-    
+
     Args:
         config: Model configuration dictionary
-        
+
     Returns:
         Initialized model
-        
+
     Raises:
         ValueError: If architecture is unknown or configuration is invalid
     """
     architecture = config.get("architecture", "unet").lower()
-    
+
     # Validate architecture
     if architecture not in ["unet", "satlaspretrain_unet"]:
         raise ValueError(
             f"Unknown architecture: {architecture}. "
             f"Supported: 'unet', 'satlaspretrain_unet'"
         )
-    
+
     if architecture == "unet":
         logger.info("Creating baseline UNet architecture")
         return UNet(
@@ -48,10 +48,10 @@ def create_model(config: Dict[str, Any]) -> nn.Module:
             logger.error(f"Failed to import SatlasPretrainUNet: {e}")
             logger.error("Make sure satlaspretrain-models is installed: pip install satlaspretrain-models")
             raise
-        
+
         encoder_config = config.get("encoder", {})
         encoder_name = encoder_config.get("name", "resnet50")
-        
+
         # Validate encoder name
         valid_encoders = ["resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"]
         if encoder_name not in valid_encoders:
@@ -59,7 +59,7 @@ def create_model(config: Dict[str, Any]) -> nn.Module:
                 f"Unknown encoder name: {encoder_name}. "
                 f"Supported: {valid_encoders}"
             )
-        
+
         return SatlasPretrainUNet(
             in_channels=config.get("in_channels", 5),
             out_channels=config.get("out_channels", 1),

@@ -31,13 +31,13 @@ def analyze_tile_performance(
 ) -> Dict:
     """
     Analyze model performance for a single tile and compare to baseline.
-    
+
     Args:
         tile_info: Tile information from filtered_tiles.json (includes baseline_metrics)
         targets_dir: Directory containing target tiles
         model_predictions: Model predictions for this tile (torch.Tensor)
         iou_threshold: Threshold for IoU calculation
-    
+
     Returns:
         Dictionary with performance metrics and comparison to baseline
     """
@@ -45,25 +45,25 @@ def analyze_tile_performance(
     target_path = targets_dir / tile_info["targets_path"]
     with rasterio.open(target_path) as src:
         target_data = src.read(1)
-    
+
     # Convert to tensors
     target_tensor = torch.from_numpy(target_data).float()
-    
+
     # Ensure predictions match target shape
     if model_predictions.shape != target_tensor.shape:
         # If predictions are batched or have channel dimension, squeeze
         model_predictions = model_predictions.squeeze()
         if model_predictions.shape != target_tensor.shape:
             raise ValueError(f"Shape mismatch: pred {model_predictions.shape} vs target {target_tensor.shape}")
-    
+
     # Compute model metrics
     model_mae = compute_mae(model_predictions, target_tensor)
     model_rmse = compute_rmse(model_predictions, target_tensor)
     model_iou = compute_iou(model_predictions, target_tensor, threshold=iou_threshold)
-    
+
     # Get baseline metrics from tile info
     baseline = tile_info.get("target_stats", {}).get("baseline_metrics", {})
-    
+
     if not baseline:
         return {
             "tile_id": tile_info["tile_id"],
@@ -72,21 +72,21 @@ def analyze_tile_performance(
             "model_rmse": float(model_rmse),
             "model_iou": float(model_iou),
         }
-    
+
     baseline_mae = baseline.get("baseline_mae", {})
     class_imbalance = baseline.get("class_imbalance", {})
-    
+
     # Compare to baselines
     best_baseline_mae = baseline_mae.get("weighted_optimal", baseline_mae.get("predict_zero", float("inf")))
     baseline_mae_zero = baseline_mae.get("predict_zero", float("inf"))
-    
+
     improvement_over_baseline = baseline_mae_zero - model_mae
     improvement_over_optimal = best_baseline_mae - model_mae
-    
+
     # Determine if improvement is real
     is_better_than_baseline = model_mae < baseline_mae_zero
     is_better_than_optimal = model_mae < best_baseline_mae
-    
+
     return {
         "tile_id": tile_info["tile_id"],
         "model_metrics": {
@@ -118,49 +118,49 @@ def analyze_all_tiles(
 ) -> Dict:
     """
     Analyze performance for all tiles and provide summary statistics.
-    
+
     Args:
         filtered_tiles_path: Path to filtered_tiles.json
         targets_dir: Directory containing target tiles
         model_predictions_dict: Dictionary mapping tile_id to predictions tensor
         iou_threshold: Threshold for IoU calculation
-    
+
     Returns:
         Dictionary with per-tile and aggregate analysis
     """
     all_tiles = load_filtered_tiles(filtered_tiles_path)
-    
+
     per_tile_results = []
     tiles_better_than_baseline = 0
     tiles_better_than_optimal = 0
-    
+
     for tile_info in all_tiles:
         tile_id = tile_info["tile_id"]
-        
+
         if tile_id not in model_predictions_dict:
             print(f"Warning: No predictions found for {tile_id}, skipping")
             continue
-        
+
         predictions = model_predictions_dict[tile_id]
         result = analyze_tile_performance(
             tile_info, targets_dir, predictions, iou_threshold
         )
-        
+
         per_tile_results.append(result)
-        
+
         if result.get("baseline_comparison", {}).get("is_better_than_baseline", False):
             tiles_better_than_baseline += 1
-        
+
         if result.get("baseline_comparison", {}).get("is_better_than_optimal", False):
             tiles_better_than_optimal += 1
-    
+
     # Aggregate statistics
     if per_tile_results:
         model_maes = [r["model_metrics"]["mae"] for r in per_tile_results if "model_metrics" in r]
         baseline_maes = [r["baseline_comparison"]["baseline_mae_zero"] for r in per_tile_results if "baseline_comparison" in r]
         improvements = [r["baseline_comparison"]["improvement_over_baseline"] for r in per_tile_results if "baseline_comparison" in r]
         lobe_fractions = [r["tile_characteristics"]["lobe_fraction"] for r in per_tile_results if "tile_characteristics" in r]
-        
+
         aggregate_stats = {
             "total_tiles_analyzed": len(per_tile_results),
             "tiles_better_than_baseline": tiles_better_than_baseline,
@@ -174,7 +174,7 @@ def analyze_all_tiles(
         }
     else:
         aggregate_stats = {}
-    
+
     return {
         "per_tile_results": per_tile_results,
         "aggregate_stats": aggregate_stats,
@@ -184,9 +184,9 @@ def analyze_all_tiles(
 def main():
     """Main function - example usage."""
     import argparse
-    
+
     project_root = get_project_root(__file__)
-    
+
     parser = argparse.ArgumentParser(
         description="Analyze per-tile model performance against baselines"
     )
@@ -220,14 +220,14 @@ def main():
         default=None,
         help="Output JSON file for analysis results (optional)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Resolve paths
     filtered_tiles_path = resolve_path(args.filtered_tiles, project_root)
     targets_dir = resolve_path(args.targets_dir, project_root)
     predictions_dir = resolve_path(args.predictions, project_root)
-    
+
     # Load predictions
     print("Loading model predictions...")
     predictions_dict = {}
@@ -236,9 +236,9 @@ def main():
         with rasterio.open(pred_file) as src:
             pred_data = src.read(1)
         predictions_dict[tile_id] = torch.from_numpy(pred_data).float()
-    
+
     print(f"Loaded {len(predictions_dict)} predictions")
-    
+
     # Analyze
     print("Analyzing per-tile performance...")
     results = analyze_all_tiles(
@@ -247,7 +247,7 @@ def main():
         predictions_dict,
         iou_threshold=args.iou_threshold,
     )
-    
+
     # Print summary
     stats = results["aggregate_stats"]
     print("\n=== Per-Tile Performance Analysis ===")
@@ -258,7 +258,7 @@ def main():
     print(f"Average baseline MAE: {stats.get('average_baseline_mae', 0):.4f}")
     print(f"Average improvement: {stats.get('average_improvement', 0):.4f}")
     print(f"Average lobe fraction: {stats.get('average_lobe_fraction', 0)*100:.2f}%")
-    
+
     # Save if requested
     if args.output:
         output_path = resolve_path(args.output, project_root)

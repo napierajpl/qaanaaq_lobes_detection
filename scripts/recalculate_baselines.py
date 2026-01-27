@@ -15,16 +15,16 @@ from src.utils.path_utils import get_project_root, resolve_path
 
 
 def compute_tile_baselines(
-    target_values: np.ndarray, 
+    target_values: np.ndarray,
     lobe_threshold: float = 5.0
 ) -> Dict:
     """
     Compute baseline metrics for a single tile.
-    
+
     Args:
         target_values: Flattened array of target values
         lobe_threshold: Threshold for lobe pixels
-    
+
     Returns:
         Dictionary with baseline statistics
     """
@@ -34,28 +34,28 @@ def compute_tile_baselines(
     std_val = float(np.std(target_values))
     min_val = float(np.min(target_values))
     max_val = float(np.max(target_values))
-    
+
     # Class imbalance
     lobe_mask = target_values >= lobe_threshold
     background_mask = target_values < lobe_threshold
-    
+
     lobe_pixels = int(np.sum(lobe_mask))
     background_pixels = int(np.sum(background_mask))
     lobe_fraction = float(lobe_pixels / len(target_values)) if len(target_values) > 0 else 0.0
-    
+
     # Baseline MAE strategies
     mae_predict_zero = float(np.mean(np.abs(target_values - 0.0)))
     mae_predict_mean = float(np.mean(np.abs(target_values - mean_val)))
     mae_predict_median = float(np.mean(np.abs(target_values - median_val)))
-    
+
     # Baseline RMSE strategies
     rmse_predict_zero = float(np.sqrt(np.mean((target_values - 0.0) ** 2)))
     rmse_predict_mean = float(np.sqrt(np.mean((target_values - mean_val) ** 2)))
-    
+
     # Per-class baselines
     lobe_values = target_values[lobe_mask]
     background_values = target_values[background_mask]
-    
+
     if len(lobe_values) > 0:
         lobe_mean = float(np.mean(lobe_values))
         mae_lobe_predict_zero = float(np.mean(np.abs(lobe_values - 0.0)))
@@ -64,28 +64,28 @@ def compute_tile_baselines(
         lobe_mean = 0.0
         mae_lobe_predict_zero = 0.0
         mae_lobe_predict_mean = 0.0
-    
+
     if len(background_values) > 0:
         mae_background_predict_zero = float(np.mean(np.abs(background_values - 0.0)))
     else:
         mae_background_predict_zero = 0.0
-    
+
     # Weighted baseline (optimal per-class strategy)
     if len(target_values) > 0:
         weighted_mae = (
-            mae_background_predict_zero * len(background_values) + 
+            mae_background_predict_zero * len(background_values) +
             mae_lobe_predict_mean * len(lobe_values)
         ) / len(target_values)
     else:
         weighted_mae = 0.0
-    
+
     # Baseline IoU (predict 0 everywhere = no lobes predicted)
     target_binary = (target_values >= lobe_threshold).astype(float)
     pred_zero_binary = np.zeros_like(target_binary)
     intersection = np.sum(pred_zero_binary * target_binary)
     union = np.sum(pred_zero_binary) + np.sum(target_binary) - intersection
     iou_predict_zero = float(intersection / union) if union > 0 else (1.0 if intersection == 0 else 0.0)
-    
+
     return {
         "statistics": {
             "mean": mean_val,
@@ -133,7 +133,7 @@ def recalculate_baselines(
 ) -> None:
     """
     Recalculate baseline metrics for all tiles in filtered_tiles.json.
-    
+
     Args:
         filtered_tiles_path: Path to filtered_tiles.json
         targets_dir: Base directory containing target tiles
@@ -142,68 +142,68 @@ def recalculate_baselines(
     print(f"Loading filtered tiles from: {filtered_tiles_path}")
     with open(filtered_tiles_path, 'r') as f:
         data = json.load(f)
-    
+
     tiles = data.get("tiles", [])
     print(f"Found {len(tiles)} tiles to process")
-    
+
     updated_count = 0
     error_count = 0
-    
+
     for tile in tqdm(tiles, desc="Recalculating baselines"):
         try:
             # Get target tile path
             targets_path = tile.get("targets_path")
             if not targets_path:
                 continue
-            
+
             # Resolve full path
             target_file = targets_dir / targets_path
-            
+
             if not target_file.exists():
                 print(f"Warning: Target file not found: {target_file}")
                 error_count += 1
                 continue
-            
+
             # Load target tile
             with rasterio.open(target_file) as src:
                 target_data = src.read(1)
                 flat_data = target_data.flatten()
-            
+
             # Recalculate baseline metrics
             baseline_metrics = compute_tile_baselines(flat_data, lobe_threshold)
-            
+
             # Update target_stats
             if "target_stats" not in tile:
                 tile["target_stats"] = {}
-            
+
             # Update statistics
             tile["target_stats"]["max_value"] = baseline_metrics["statistics"]["max"]
-            
+
             # Update positive pixels and coverage (these might have changed with 20px)
             positive_mask = target_data > 0
             positive_pixels = int(np.sum(positive_mask))
             total_pixels = int(target_data.size)
             coverage_ratio = float(positive_pixels / total_pixels) if total_pixels > 0 else 0.0
-            
+
             tile["target_stats"]["positive_pixels"] = positive_pixels
             tile["target_stats"]["total_pixels"] = total_pixels
             tile["target_stats"]["coverage_ratio"] = coverage_ratio
-            
+
             # Update baseline metrics
             tile["target_stats"]["baseline_metrics"] = baseline_metrics
-            
+
             updated_count += 1
-            
+
         except Exception as e:
             print(f"Error processing tile {tile.get('tile_id', 'unknown')}: {e}")
             error_count += 1
             continue
-    
+
     # Save updated JSON
     print("\nSaving updated filtered tiles...")
     with open(filtered_tiles_path, 'w') as f:
         json.dump(data, f, indent=2)
-    
+
     print("\nCompleted:")
     print(f"  - Updated: {updated_count} tiles")
     print(f"  - Errors: {error_count} tiles")
@@ -213,9 +213,9 @@ def recalculate_baselines(
 def main():
     """Recalculate baseline metrics."""
     import argparse
-    
+
     project_root = get_project_root(__file__)
-    
+
     parser = argparse.ArgumentParser(
         description="Recalculate baseline metrics in filtered_tiles.json"
     )
@@ -237,20 +237,20 @@ def main():
         default=5.0,
         help="Threshold for lobe pixels (default: 5.0)",
     )
-    
+
     args = parser.parse_args()
-    
+
     input_path = resolve_path(args.input, project_root)
     targets_dir = resolve_path(args.targets_dir, project_root)
-    
+
     if not input_path.exists():
         print(f"Error: File not found: {input_path}")
         sys.exit(1)
-    
+
     if not targets_dir.exists():
         print(f"Error: Targets directory not found: {targets_dir}")
         sys.exit(1)
-    
+
     recalculate_baselines(input_path, targets_dir, args.lobe_threshold)
 
 
