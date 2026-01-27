@@ -1,0 +1,15 @@
+best_validation_loss: 1.56364107131958
+best_trial_number: 0
+hyperparameters:
+  learning_rate: 0.0013292918943162175
+  batch_size: 8
+  weight_decay: 2.9375384576328295e-05
+  focal_alpha: 0.2906585285177396
+  focal_gamma: 3.5985284373248057
+  loss_function: combined
+  encoder_name: resnet50
+  decoder_dropout: 0.09170225492671691
+  lr_scheduler_patience: 9
+  lr_scheduler_factor: 0.5198051453057903
+  max_grad_norm: 0.7309539835912913
+  unfreeze_after_epoch: 14

@@ -1,0 +1,95 @@
+model:
+  # Architecture options:
+  #   - "unet": Baseline U-Net without pretrained encoder
+  #   - "satlaspretrain_unet": U-Net with SatlasPretrain pretrained encoder (recommended)
+  architecture: "satlaspretrain_unet"
+  in_channels: 5
+  out_channels: 1
+  
+  # UNet-specific parameters (only used if architecture == "unet")
+  base_channels: 64
+  dropout: 0.2  # Dropout for regularization (prevents overfitting)
+  
+  # SatlasPretrain-specific parameters (only used if architecture == "satlaspretrain_unet")
+  encoder:
+    name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
+    pretrained: true  # Use pretrained weights from SatlasPretrain
+    freeze_encoder: true  # Freeze encoder initially, unfreeze after convergence
+    unfreeze_after_epoch: 10  # Unfreeze encoder after this epoch (0 = never unfreeze)
+  decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
+
+training:
+  batch_size: 16
+  num_epochs: 300  # Increased from 50 - U-Net typically needs 100+ epochs
+  learning_rate: 0.01  # Reduced from 0.005 - too high causes plateau
+  optimizer: "Adam"
+  # Loss function options:
+  #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
+  #   - "weighted_smooth_l1": Weighted Smooth L1 (handles class imbalance)
+  #   - "dice": Dice loss (directly optimizes for segmentation overlap)
+  #   - "iou": IoU loss (directly optimizes for intersection over union)
+  #   - "soft_iou": Soft IoU using sigmoid (smooth gradients, better for training)
+  #   - "encouragement": Encourages model to predict higher values for lobe areas
+  #   - "focal": Focal Loss - down-weights easy examples, focuses on hard examples (best for extreme imbalance)
+  #   - "combined": IoU + Weighted Smooth L1 (best of both worlds)
+  loss_function: "focal"  # Focal Loss recommended for extreme class imbalance (93.5% background)
+  weight_decay: 0.001  # Increased from 0.0001 to reduce overfitting
+  # Weighted loss parameters (for weighted_smooth_l1 and combined)
+  lobe_weight: 5.0  # Weight for lobe pixels (value >= threshold) - not used with encouragement
+  # Combined loss weights (only used if loss_function == "combined")
+  iou_weight: 0.5  # Weight for IoU component in combined loss
+  regression_weight: 0.5  # Weight for regression component in combined loss
+  use_soft_iou: true  # Use soft IoU in combined loss (smooth gradients)
+  # Encouragement loss weight (only used if loss_function == "encouragement")
+  encouragement_weight: 10.0  # Increased from 2.0 - stronger penalty for predictions below threshold
+  # Focal Loss parameters (only used if loss_function == "focal")
+  focal_alpha: 0.75  # Weighting factor (0.75 = more weight on lobes, 0.25 = more on background)
+  focal_gamma: 2.0  # Focusing parameter (higher = more focus on hard examples, 2.0 is standard)
+  # IoU threshold for lobe detection
+  # IMPORTANT: How IoU works with proximity maps:
+  #   - Proximity maps have values 0-20: 0=background, 1-19=proximity, 20=lobe center
+  #   - IoU binarizes: pred >= threshold → 1 (lobe area), else 0 (background)
+  #   - With threshold=1.0: any pixel >= 1.0 is considered "lobe area" (includes proximity)
+  #   - IoU = intersection / union of these binary masks
+  #   - If model predicts all values < 1.0, IoU will be 0 (no overlap)
+  #   - Note: Proximity zone expanded to 20px (Jan 22, 2026) for better class balance
+  iou_threshold: 1.0  # Pixels with value >= this are considered lobes (lower = easier task)
+  # Learning rate scheduler
+  lr_scheduler: "ReduceLROnPlateau"
+  lr_scheduler_patience: 10
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 0.0001
+  # Early stopping
+  early_stopping_patience: 40
+  early_stopping_min_delta: 0.00001
+  # Gradient clipping (for stability)
+  max_grad_norm: 1.0
+
+data:
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  normalize_rgb: true
+  standardize_dem: true
+  standardize_slope: true
+
+mlflow:
+  experiment_name: "lobe_detection"
+  tracking_uri: "file:./mlruns"
+  log_artifacts: true
+  log_model: true
+
+paths:
+  # Dev mode (for development)
+  dev:
+    filtered_tiles: "data/processed/tiles/dev/train/filtered_tiles.json"
+    features_dir: "data/processed/tiles/dev/train/features"
+    targets_dir: "data/processed/tiles/dev/train/targets"
+    models_dir: "data/models/dev"
+  
+  # Production mode (full dataset)
+  production:
+    filtered_tiles: "data/processed/tiles/train/filtered_tiles.json"
+    features_dir: "data/processed/tiles/train/features"
+    targets_dir: "data/processed/tiles/train/targets"
+    models_dir: "data/models/production"
