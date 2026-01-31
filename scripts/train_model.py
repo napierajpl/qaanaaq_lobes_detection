@@ -40,12 +40,106 @@ from src.training.dataloader import (
     create_dataloaders,
 )
 from src.training.trainer import train_one_epoch, validate, save_checkpoint
-from src.training.visualization import create_training_plots
+from src.training.visualization import (
+    create_training_plots,
+    resolve_representative_tiles,
+    create_prediction_tile_figures,
+)
 from src.preprocessing.normalization import compute_statistics
 from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics
 from src.utils.path_utils import get_project_root, resolve_path
 from src.map_overlays.tile_registry import TileRegistry
 from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
+
+# Mapping from best_hyperparameters.yaml "hyperparameters" keys to config paths (tuple of keys)
+_BEST_HP_CONFIG_PATHS = {
+    "learning_rate": ("training", "learning_rate"),
+    "batch_size": ("training", "batch_size"),
+    "weight_decay": ("training", "weight_decay"),
+    "focal_alpha": ("training", "focal_alpha"),
+    "focal_gamma": ("training", "focal_gamma"),
+    "loss_function": ("training", "loss_function"),
+    "encoder_name": ("model", "encoder", "name"),
+    "decoder_dropout": ("model", "decoder_dropout"),
+    "lr_scheduler_patience": ("training", "lr_scheduler_patience"),
+    "lr_scheduler_factor": ("training", "lr_scheduler_factor"),
+    "max_grad_norm": ("training", "max_grad_norm"),
+    "unfreeze_after_epoch": ("model", "encoder", "unfreeze_after_epoch"),
+}
+
+
+def _parse_param_value(s: str):
+    if s in ("True", "true"):
+        return True
+    if s in ("False", "false"):
+        return False
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    return s
+
+
+def apply_best_hyperparameters(config: dict, best_hp_path: Path) -> dict:
+    """Override config with values from best_hyperparameters.yaml (in-place). Returns loaded data for logging."""
+    with open(best_hp_path) as f:
+        data = yaml.safe_load(f)
+    hp = data.get("hyperparameters") or {}
+    for key, path_keys in _BEST_HP_CONFIG_PATHS.items():
+        if key not in hp:
+            continue
+        value = hp[key]
+        d = config
+        for k in path_keys[:-1]:
+            d = d.setdefault(k, {})
+        d[path_keys[-1]] = value
+    logger.info("Applied best hyperparameters from %s", best_hp_path)
+    return data
+
+
+def apply_hyperparameters_from_mlflow_run(
+    config: dict,
+    run_id: str,
+    tracking_uri: Optional[str] = None,
+) -> dict:
+    """Override config with params from an MLflow run (in-place). Returns dict for logging (run_id, hyperparameters, etc.)."""
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+    client = mlflow.MlflowClient()
+    run = client.get_run(run_id)
+    params = run.data.params or {}
+    hp = {}
+    for key, path_keys in _BEST_HP_CONFIG_PATHS.items():
+        flat_key = ".".join(path_keys)
+        raw = params.get(f"best_hparams.{key}") or params.get(f"optuna.{key}") or params.get(flat_key)
+        if raw is None:
+            continue
+        value = _parse_param_value(str(raw))
+        hp[key] = value
+        d = config
+        for k in path_keys[:-1]:
+            d = d.setdefault(k, {})
+        d[path_keys[-1]] = value
+    best_val = None
+    if "best_hparams.best_validation_loss" in params:
+        try:
+            best_val = float(params["best_hparams.best_validation_loss"])
+        except (TypeError, ValueError):
+            pass
+    if best_val is None and run.data.metrics:
+        best_val = run.data.metrics.get("best_val_loss")
+    logger.info("Applied hyperparameters from MLflow run %s", run_id)
+    return {
+        "source": "mlflow_run",
+        "run_id": run_id,
+        "best_validation_loss": best_val,
+        "best_trial_number": params.get("best_hparams.best_trial_number") or params.get("optuna_trial"),
+        "hyperparameters": hp,
+    }
 
 # Setup logging
 logging.basicConfig(
@@ -73,6 +167,7 @@ def train_model_with_config(
     mode: str = "production",
     trial: Optional[object] = None,
     run_name: Optional[str] = None,
+    applied_best_hparams: Optional[dict] = None,
 ) -> float:
     """
     Train model with given configuration.
@@ -84,6 +179,7 @@ def train_model_with_config(
         mode: "dev" or "production"
         trial: Optional Optuna trial object (for pruning)
         run_name: Optional MLflow run name
+        applied_best_hparams: Optional dict from best_hyperparameters.yaml (for logging when --best-hparams was used)
 
     Returns:
         Best validation loss
@@ -290,6 +386,35 @@ def train_model_with_config(
         log_training_config(config)
         mlflow.log_param("mode", mode)
         mlflow.log_param("num_params", num_params)
+        if applied_best_hparams is not None:
+            hp = applied_best_hparams.get("hyperparameters") or {}
+            if applied_best_hparams.get("source") == "mlflow_run":
+                run_id = applied_best_hparams.get("run_id")
+                best_val = applied_best_hparams.get("best_validation_loss")
+                mlflow.set_tag("hp_source_run_id", str(run_id))
+                if best_val is not None:
+                    mlflow.log_param("hp_from_run.best_validation_loss", best_val)
+                for k, v in hp.items():
+                    mlflow.log_param(f"hp_from_run.{k}", v)
+                logger.info(
+                    "Using hyperparameters from MLflow run_id=%s val_loss=%s loss=%s lr=%s batch=%s encoder=%s unfreeze_epoch=%s",
+                    run_id, best_val, hp.get("loss_function"), hp.get("learning_rate"), hp.get("batch_size"),
+                    hp.get("encoder_name"), hp.get("unfreeze_after_epoch"),
+                )
+            else:
+                trial_num = applied_best_hparams.get("best_trial_number")
+                best_val = applied_best_hparams.get("best_validation_loss")
+                mlflow.set_tag("best_hparams_trial", str(trial_num))
+                mlflow.log_param("best_hparams.best_validation_loss", best_val)
+                mlflow.log_param("best_hparams.best_trial_number", trial_num)
+                for k, v in hp.items():
+                    mlflow.log_param(f"best_hparams.{k}", v)
+                logger.info(
+                    "Using best hyperparameters: trial=%s val_loss=%.4f loss=%s lr=%.2e batch=%s encoder=%s unfreeze_epoch=%s",
+                    trial_num, best_val,
+                    hp.get("loss_function"), hp.get("learning_rate"), hp.get("batch_size"),
+                    hp.get("encoder_name"), hp.get("unfreeze_after_epoch"),
+                )
         mlflow.log_param("trainable_params", trainable_params)
         mlflow.log_param("num_train_tiles", len(train_tiles))
         mlflow.log_param("num_val_tiles", len(val_tiles))
@@ -577,6 +702,12 @@ def train_model_with_config(
                 )
             print(f"[MLFLOW] tracking_uri={tracking_uri}", flush=True)
 
+        # For non-Optuna runs, load best checkpoint so plots, prediction viz, and MLflow model use it
+        if trial is None and best_model_path.exists():
+            checkpoint = torch.load(best_model_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            logger.info("Loaded best checkpoint for plots and MLflow")
+
         # Create and log visualization plots (skip for Optuna trials to save time)
         if trial is None:
             logger.info("=== Creating Training Plots ===")
@@ -586,6 +717,34 @@ def train_model_with_config(
                 mlflow.log_figure(fig, f"plots/{plot_name}.png")
                 plt.close(fig)
                 logger.info(f"Logged {plot_name} plot to MLflow")
+
+            # Prediction tile visualization for representative tiles (config: visualization.representative_tile_ids)
+            viz_config = config.get("visualization", {})
+            rep_tile_ids = viz_config.get("representative_tile_ids", [])
+            if mode == "dev" and "representative_tile_ids_dev" in viz_config:
+                rep_tile_ids = viz_config["representative_tile_ids_dev"]
+            if rep_tile_ids:
+                rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids)
+                if rep_tiles:
+                    logger.info("=== Creating prediction tile visualizations ===")
+                    pred_figures = create_prediction_tile_figures(
+                        model,
+                        rep_tiles,
+                        features_dir,
+                        targets_dir,
+                        normalization_stats,
+                        device,
+                        iou_threshold=iou_threshold,
+                    )
+                    for tid, fig in pred_figures.items():
+                        mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
+                        plt.close(fig)
+                        logger.info(f"Logged prediction tile: {tid}")
+                else:
+                    logger.warning(
+                        "representative_tile_ids configured but no matching tiles found; "
+                        "check tile IDs match filtered_tiles.json"
+                    )
 
         # Save model to MLflow (skip for Optuna trials to save time)
         if mlflow_config.get("log_model", True) and trial is None:
@@ -620,6 +779,30 @@ def main():
         default=None,
         help="MLflow run name (default: auto-generated)",
     )
+    parser.add_argument(
+        "--max-epochs",
+        type=int,
+        default=None,
+        help="Override num_epochs from config (e.g. 1 for a quick dry run)",
+    )
+    parser.add_argument(
+        "--best-hparams",
+        action="store_true",
+        help="Override config with best hyperparameters from configs/best_hyperparameters.yaml",
+    )
+    parser.add_argument(
+        "--best-hparams-path",
+        type=Path,
+        default=None,
+        help="Path to best hyperparameters YAML (default: configs/best_hyperparameters.yaml)",
+    )
+    parser.add_argument(
+        "--hp_from_run_id",
+        type=str,
+        default=None,
+        metavar="RUN_ID",
+        help="Apply hyperparameters from an MLflow run ID (e.g. from MLflow UI).",
+    )
 
     args = parser.parse_args()
 
@@ -627,6 +810,49 @@ def main():
     config_path = resolve_path(args.config, project_root)
     with open(config_path) as f:
         config = yaml.safe_load(f)
+    if args.max_epochs is not None:
+        config["training"]["num_epochs"] = args.max_epochs
+    applied_best_hparams = None
+    tracking_uri = config.get("mlflow", {}).get("tracking_uri")
+    if args.hp_from_run_id:
+        applied_best_hparams = apply_hyperparameters_from_mlflow_run(
+            config, args.hp_from_run_id, tracking_uri=tracking_uri
+        )
+        run_id = applied_best_hparams.get("run_id")
+        best_val = applied_best_hparams.get("best_validation_loss")
+        hp = applied_best_hparams.get("hyperparameters") or {}
+        print("")
+        print("=== Applied hyperparameters from MLflow run ===")
+        print(f"  run_id: {run_id}")
+        print(f"  best_validation_loss: {best_val}")
+        for key in ("loss_function", "learning_rate", "batch_size", "encoder_name", "unfreeze_after_epoch",
+                    "focal_alpha", "focal_gamma", "decoder_dropout", "weight_decay", "max_grad_norm"):
+            if key in hp:
+                print(f"  {key}: {hp[key]}")
+        print("===============================================")
+        print("")
+    elif args.best_hparams:
+        best_hp_path = args.best_hparams_path or (project_root / "configs" / "best_hyperparameters.yaml")
+        best_hp_path = resolve_path(best_hp_path, project_root)
+        if not best_hp_path.exists():
+            raise FileNotFoundError(
+                f"Best hyperparameters file not found: {best_hp_path}. "
+                "Run tune_hyperparameters.py first or set --best-hparams-path."
+            )
+        applied_best_hparams = apply_best_hyperparameters(config, best_hp_path)
+        trial_num = applied_best_hparams.get("best_trial_number")
+        best_val = applied_best_hparams.get("best_validation_loss")
+        hp = applied_best_hparams.get("hyperparameters") or {}
+        print("")
+        print("=== Applied best hyperparameters (from best_hyperparameters.yaml) ===")
+        print(f"  best_trial_number: {trial_num}")
+        print(f"  best_validation_loss: {best_val}")
+        for key in ("loss_function", "learning_rate", "batch_size", "encoder_name", "unfreeze_after_epoch",
+                    "focal_alpha", "focal_gamma", "decoder_dropout", "weight_decay", "max_grad_norm"):
+            if key in hp:
+                print(f"  {key}: {hp[key]}")
+        print("===================================================================")
+        print("")
 
     # Determine mode
     mode = "dev" if args.dev else "production"
@@ -637,6 +863,7 @@ def main():
         mode=mode,
         trial=None,  # Not using Optuna
         run_name=args.run_name,
+        applied_best_hparams=applied_best_hparams,
     )
 
 
