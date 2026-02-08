@@ -543,6 +543,7 @@ def train_model_with_config(
                         normalization_stats,
                         device,
                         iou_threshold=iou_threshold,
+                        tile_size=tile_size,
                     )
                     for tid, fig in pred_figures.items():
                         mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")

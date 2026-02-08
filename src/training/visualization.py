@@ -9,6 +9,8 @@ import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
+import rasterio
+import torch
 
 
 def _calculate_smart_ylim(
@@ -298,3 +300,102 @@ def get_representative_tile_ids_for_viz(
     if mode == "dev" and "representative_tile_ids_dev" in viz_config:
         return viz_config.get("representative_tile_ids_dev", [])
     return viz_config.get("representative_tile_ids", [])
+
+
+def _tile_id_to_index(tile_id: str) -> Optional[int]:
+    parts = tile_id.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
+def resolve_representative_tiles(
+    all_tiles: List[dict],
+    config_ids: List[Union[int, str]],
+) -> List[dict]:
+    requested_indices = {x for x in config_ids if isinstance(x, int)}
+    requested_ids_str = {str(x).strip() for x in config_ids if isinstance(x, str)}
+    out = []
+    for t in all_tiles:
+        tid = t.get("tile_id")
+        if tid is None:
+            continue
+        idx = _tile_id_to_index(tid)
+        if idx is not None and idx in requested_indices:
+            out.append(t)
+        elif tid in requested_ids_str:
+            out.append(t)
+    return out
+
+
+def _load_rgb_for_display(features_path: Path, features_base_dir: Path) -> np.ndarray:
+    p = Path(features_path)
+    path = (features_base_dir / p) if not p.is_absolute() else p
+    with rasterio.open(path) as src:
+        rgb = src.read([1, 2, 3])
+    rgb = np.transpose(rgb, (1, 2, 0))
+    rgb = np.clip(rgb / 255.0, 0, 1)
+    return rgb
+
+
+def create_prediction_tile_figures(
+    model: torch.nn.Module,
+    rep_tiles: List[dict],
+    features_dir: Path,
+    targets_dir: Path,
+    normalization_stats: dict,
+    device: torch.device,
+    iou_threshold: float = 5.0,
+    tile_size: int = 256,
+) -> Dict[str, plt.Figure]:
+    from src.training.dataloader import TileDataset
+    from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
+
+    if rep_tiles:
+        first_path = Path(features_dir) / rep_tiles[0].get("features_path", "").replace("\\", "/")
+        if first_path.exists():
+            with rasterio.open(first_path) as src:
+                h, w = src.height, src.width
+                if h == w:
+                    tile_size = int(h)
+    model.eval()
+    dataset = TileDataset(
+        rep_tiles,
+        features_dir,
+        targets_dir,
+        normalization_stats,
+        tile_size=tile_size,
+    )
+    figures = {}
+    for i, tile_info in enumerate(rep_tiles):
+        features, target = dataset[i]
+        features_batch = features.unsqueeze(0).to(device)
+        with torch.no_grad():
+            pred = model(features_batch)
+        pred_cpu = pred.squeeze(0).cpu()
+        target_cpu = target.unsqueeze(0)
+        pred_np = np.squeeze(pred_cpu.numpy())
+        target_np = target.squeeze().numpy()
+        mae = compute_mae(pred_cpu, target_cpu)
+        rmse = compute_rmse(pred_cpu, target_cpu)
+        iou = compute_iou(pred_cpu, target_cpu, threshold=iou_threshold)
+        metrics = {"mae": mae, "rmse": rmse, "iou": iou}
+        fp = tile_info.get("features_path", "")
+        rgb = _load_rgb_for_display(Path(fp.replace("\\", "/")), Path(features_dir))
+        tid = tile_info.get("tile_id", f"tile_{i}")
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        axes[0].imshow(rgb)
+        axes[0].set_title("RGB")
+        axes[0].axis("off")
+        vmin, vmax = 0.0, 20.0
+        axes[1].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
+        axes[1].set_title("Proximity (target)")
+        axes[1].axis("off")
+        axes[2].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
+        axes[2].set_title("Prediction")
+        axes[2].axis("off")
+        title = f"Tile: {tid}  |  MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}"
+        fig.suptitle(title, fontsize=10)
+        plt.tight_layout()
+        figures[tid] = fig
+    return figures
