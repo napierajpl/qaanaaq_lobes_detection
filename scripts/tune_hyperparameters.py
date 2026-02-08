@@ -20,6 +20,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.path_utils import get_project_root, resolve_path
+from src.utils.proximity_utils import infer_proximity_token
 
 # Import after path setup
 from scripts.train_model import train_model_with_config
@@ -48,15 +49,6 @@ TUNED_PARAM_KEYS = [
 ]
 
 
-def _infer_proximity_token(targets_dir: str) -> str:
-    s = targets_dir.lower()
-    if "proximity20" in s:
-        return "proximity20"
-    if "proximity10" in s:
-        return "proximity10"
-    return "unknown"
-
-
 def _current_session_metadata(base_config: dict, mode: str) -> dict:
     """Metadata used to judge whether seeding from previous best makes sense."""
     project_root = get_project_root(__file__)
@@ -81,7 +73,7 @@ def _current_session_metadata(base_config: dict, mode: str) -> dict:
         "filtered_tiles_path": filtered_tiles,
         "features_dir": features_dir,
         "targets_dir": targets_dir,
-        "proximity_token": _infer_proximity_token(targets_dir),
+        "proximity_token": infer_proximity_token(targets_dir),
         "mlflow_tracking_uri": str(base_config.get("mlflow", {}).get("tracking_uri", "")),
     }
 

@@ -3,7 +3,7 @@ Visualization utilities for training metrics.
 """
 
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -283,3 +283,18 @@ def create_training_plots(
             fig.savefig(output_dir / 'improvement_percent.png', dpi=150, bbox_inches='tight')
 
     return figures
+
+
+def get_representative_tile_ids_for_viz(
+    viz_config: dict,
+    mode: str,
+    tile_size: int = 256,
+) -> List[Union[int, str]]:
+    """Return representative_tile_ids for visualization based on mode and tile size."""
+    if tile_size == 512 and mode == "dev" and "representative_tile_ids_dev_512" in viz_config:
+        return viz_config.get("representative_tile_ids_dev_512", [])
+    if tile_size == 512 and mode != "dev" and "representative_tile_ids_512" in viz_config:
+        return viz_config.get("representative_tile_ids_512", [])
+    if mode == "dev" and "representative_tile_ids_dev" in viz_config:
+        return viz_config.get("representative_tile_ids_dev", [])
+    return viz_config.get("representative_tile_ids", [])

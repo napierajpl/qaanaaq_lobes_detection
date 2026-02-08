@@ -24,16 +24,7 @@ import mlflow
 import matplotlib.pyplot as plt
 
 from src.models.factory import create_model
-from src.models.losses import (
-    SmoothL1Loss,
-    WeightedSmoothL1Loss,
-    DiceLoss,
-    IoULoss,
-    SoftIoULoss,
-    EncouragementLoss,
-    FocalLoss,
-    CombinedLoss,
-)
+from src.training.loss_factory import create_criterion
 from src.training.dataloader import (
     load_filtered_tiles,
     create_data_splits,
@@ -42,110 +33,24 @@ from src.training.dataloader import (
 from src.training.trainer import train_one_epoch, validate, save_checkpoint
 from src.training.visualization import (
     create_training_plots,
+    get_representative_tile_ids_for_viz,
     resolve_representative_tiles,
     create_prediction_tile_figures,
 )
 from src.preprocessing.normalization import compute_statistics
 from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics
 from src.utils.path_utils import get_project_root, resolve_path
-from src.map_overlays.tile_registry import TileRegistry
-from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
+from src.utils.config_utils import (
+    apply_best_hyperparameters,
+    apply_hyperparameters_from_mlflow_run,
+    APPLIED_HP_DISPLAY_KEYS,
+)
+from src.utils.proximity_utils import infer_proximity_token, detect_proximity_params
 
-# Mapping from best_hyperparameters.yaml "hyperparameters" keys to config paths (tuple of keys)
-_BEST_HP_CONFIG_PATHS = {
-    "learning_rate": ("training", "learning_rate"),
-    "batch_size": ("training", "batch_size"),
-    "weight_decay": ("training", "weight_decay"),
-    "focal_alpha": ("training", "focal_alpha"),
-    "focal_gamma": ("training", "focal_gamma"),
-    "loss_function": ("training", "loss_function"),
-    "encoder_name": ("model", "encoder", "name"),
-    "decoder_dropout": ("model", "decoder_dropout"),
-    "lr_scheduler_patience": ("training", "lr_scheduler_patience"),
-    "lr_scheduler_factor": ("training", "lr_scheduler_factor"),
-    "max_grad_norm": ("training", "max_grad_norm"),
-    "unfreeze_after_epoch": ("model", "encoder", "unfreeze_after_epoch"),
-}
-
-
-def _parse_param_value(s: str):
-    if s in ("True", "true"):
-        return True
-    if s in ("False", "false"):
-        return False
-    try:
-        return int(s)
-    except ValueError:
-        pass
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    return s
-
-
-def apply_best_hyperparameters(config: dict, best_hp_path: Path) -> dict:
-    """Override config with values from best_hyperparameters.yaml (in-place). Returns loaded data for logging."""
-    with open(best_hp_path) as f:
-        data = yaml.safe_load(f)
-    hp = data.get("hyperparameters") or {}
-    for key, path_keys in _BEST_HP_CONFIG_PATHS.items():
-        if key not in hp:
-            continue
-        value = hp[key]
-        d = config
-        for k in path_keys[:-1]:
-            d = d.setdefault(k, {})
-        d[path_keys[-1]] = value
-    logger.info("Applied best hyperparameters from %s", best_hp_path)
-    return data
-
-
-def apply_hyperparameters_from_mlflow_run(
-    config: dict,
-    run_id: str,
-    tracking_uri: Optional[str] = None,
-) -> dict:
-    """Override config with params from an MLflow run (in-place). Returns dict for logging (run_id, hyperparameters, etc.)."""
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
-    client = mlflow.MlflowClient()
-    run = client.get_run(run_id)
-    params = run.data.params or {}
-    hp = {}
-    for key, path_keys in _BEST_HP_CONFIG_PATHS.items():
-        flat_key = ".".join(path_keys)
-        raw = params.get(f"best_hparams.{key}") or params.get(f"optuna.{key}") or params.get(flat_key)
-        if raw is None:
-            continue
-        value = _parse_param_value(str(raw))
-        hp[key] = value
-        d = config
-        for k in path_keys[:-1]:
-            d = d.setdefault(k, {})
-        d[path_keys[-1]] = value
-    best_val = None
-    if "best_hparams.best_validation_loss" in params:
-        try:
-            best_val = float(params["best_hparams.best_validation_loss"])
-        except (TypeError, ValueError):
-            pass
-    if best_val is None and run.data.metrics:
-        best_val = run.data.metrics.get("best_val_loss")
-    logger.info("Applied hyperparameters from MLflow run %s", run_id)
-    return {
-        "source": "mlflow_run",
-        "run_id": run_id,
-        "best_validation_loss": best_val,
-        "best_trial_number": params.get("best_hparams.best_trial_number") or params.get("optuna_trial"),
-        "hyperparameters": hp,
-    }
-
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger(__name__)
 
@@ -184,8 +89,6 @@ def train_model_with_config(
     Returns:
         Best validation loss
     """
-    from pathlib import Path
-
     project_root = get_project_root(Path(__file__))
 
     # Determine paths
@@ -279,61 +182,8 @@ def train_model_with_config(
                    f"(pretrained={encoder_config.get('pretrained', False)}, "
                    f"frozen={encoder_config.get('freeze_encoder', False)})")
 
-    # Setup loss and optimizer
     iou_threshold = config["training"].get("iou_threshold", 5.0)
-
-    loss_function = config["training"]["loss_function"]
-    if loss_function == "smooth_l1":
-        criterion = SmoothL1Loss()
-        logger.info("Using SmoothL1Loss")
-    elif loss_function == "weighted_smooth_l1":
-        lobe_weight = config["training"].get("lobe_weight", 5.0)
-        lobe_threshold = config["training"].get("iou_threshold", 5.0)
-        criterion = WeightedSmoothL1Loss(lobe_weight=lobe_weight, lobe_threshold=lobe_threshold)
-        logger.info(f"Using WeightedSmoothL1Loss with lobe_weight={lobe_weight}, lobe_threshold={lobe_threshold}")
-    elif loss_function == "dice":
-        criterion = DiceLoss(threshold=iou_threshold)
-        logger.info(f"Using DiceLoss with threshold={iou_threshold}")
-    elif loss_function == "iou":
-        criterion = IoULoss(threshold=iou_threshold)
-        logger.info(f"Using IoULoss with threshold={iou_threshold}")
-    elif loss_function == "soft_iou":
-        criterion = SoftIoULoss(threshold=iou_threshold)
-        logger.info(f"Using SoftIoULoss with threshold={iou_threshold}")
-    elif loss_function == "encouragement":
-        encouragement_weight = config["training"].get("encouragement_weight", 2.0)
-        criterion = EncouragementLoss(
-            lobe_threshold=iou_threshold,
-            encouragement_weight=encouragement_weight,
-        )
-        logger.info(f"Using EncouragementLoss with threshold={iou_threshold}, encouragement_weight={encouragement_weight}")
-    elif loss_function == "focal":
-        alpha = config["training"].get("focal_alpha", 0.25)
-        gamma = config["training"].get("focal_gamma", 2.0)
-        criterion = FocalLoss(
-            alpha=alpha,
-            gamma=gamma,
-            lobe_threshold=iou_threshold,
-        )
-        logger.info(f"Using FocalLoss with alpha={alpha}, gamma={gamma}, lobe_threshold={iou_threshold}")
-    elif loss_function == "combined":
-        iou_weight = config["training"].get("iou_weight", 0.5)
-        regression_weight = config["training"].get("regression_weight", 0.5)
-        lobe_weight = config["training"].get("lobe_weight", 5.0)
-        use_soft_iou = config["training"].get("use_soft_iou", False)
-        criterion = CombinedLoss(
-            iou_weight=iou_weight,
-            regression_weight=regression_weight,
-            iou_threshold=iou_threshold,
-            lobe_weight=lobe_weight,
-            lobe_threshold=iou_threshold,
-            use_soft_iou=use_soft_iou,
-        )
-        soft_iou_str = " (with soft IoU)" if use_soft_iou else ""
-        logger.info(f"Using CombinedLoss (IoU + Weighted Smooth L1){soft_iou_str} with "
-                   f"iou_weight={iou_weight}, regression_weight={regression_weight}, threshold={iou_threshold}")
-    else:
-        raise ValueError(f"Unknown loss function: {loss_function}")
+    criterion = create_criterion(config["training"])
 
     optimizer = optim.Adam(
         model.parameters(),
@@ -447,13 +297,7 @@ def train_model_with_config(
                 trial.set_user_attr("filtered_tiles_path", str(filtered_tiles_path))
                 trial.set_user_attr("features_dir", str(features_dir))
                 trial.set_user_attr("targets_dir", str(targets_dir))
-                targets_str = str(targets_dir)
-                if "proximity20" in targets_str:
-                    trial.set_user_attr("proximity_token", "proximity20")
-                elif "proximity10" in targets_str:
-                    trial.set_user_attr("proximity_token", "proximity10")
-                else:
-                    trial.set_user_attr("proximity_token", "unknown")
+                trial.set_user_attr("proximity_token", infer_proximity_token(str(targets_dir)))
             except Exception:
                 # Never fail training because of metadata capture
                 pass
@@ -467,43 +311,9 @@ def train_model_with_config(
             mlflow.log_param("model.encoder_frozen", encoder_config.get("freeze_encoder", False))
             mlflow.log_param("model.encoder_unfreeze_epoch", encoder_config.get("unfreeze_after_epoch", 0))
 
-        # Detect and log proximity map parameters from target tiles
-        proximity_max_value = None
-        proximity_max_distance = None
-
-        targets_path_str = str(targets_dir)
-        if "proximity10px" in targets_path_str or "proximity10" in targets_path_str:
-            proximity_max_value = 10
-            proximity_max_distance = 10
-        elif "proximity20px" in targets_path_str or "proximity20" in targets_path_str:
-            proximity_max_value = 20
-            proximity_max_distance = 20
-        else:
-            try:
-                import rasterio
-                sample_tiles = val_tiles[:min(5, len(val_tiles))]
-                max_values = []
-                for tile_info in sample_tiles:
-                    tile_path = targets_dir / tile_info["targets_path"]
-                    if tile_path.exists():
-                        with rasterio.open(tile_path) as raster_src:
-                            data = raster_src.read(1)
-                            max_values.append(data.max())
-
-                if max_values:
-                    detected_max = int(max(max_values))
-                    if detected_max <= 10:
-                        proximity_max_value = 10
-                        proximity_max_distance = 10
-                    elif detected_max <= 20:
-                        proximity_max_value = 20
-                        proximity_max_distance = 20
-                    else:
-                        proximity_max_value = detected_max
-                        proximity_max_distance = detected_max
-            except (rasterio.RasterioIOError, ValueError, KeyError) as e:
-                logger.warning(f"Could not detect proximity map parameters: {e}")
-
+        proximity_max_value, proximity_max_distance = detect_proximity_params(
+            targets_dir, val_tiles, sample_size=5
+        )
         if proximity_max_value is not None:
             mlflow.log_param("data.proximity_max_value", proximity_max_value)
             mlflow.log_param("data.proximity_max_distance", proximity_max_distance)
@@ -718,11 +528,9 @@ def train_model_with_config(
                 plt.close(fig)
                 logger.info(f"Logged {plot_name} plot to MLflow")
 
-            # Prediction tile visualization for representative tiles (config: visualization.representative_tile_ids)
             viz_config = config.get("visualization", {})
-            rep_tile_ids = viz_config.get("representative_tile_ids", [])
-            if mode == "dev" and "representative_tile_ids_dev" in viz_config:
-                rep_tile_ids = viz_config["representative_tile_ids_dev"]
+            tile_size = config["data"].get("tile_size", 256)
+            rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, mode, tile_size)
             if rep_tile_ids:
                 rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids)
                 if rep_tiles:
@@ -755,11 +563,32 @@ def train_model_with_config(
     return best_val_loss
 
 
+def _print_applied_hyperparameters(applied_best_hparams: dict, header: str) -> None:
+    if not applied_best_hparams:
+        return
+    hp = applied_best_hparams.get("hyperparameters") or {}
+    run_id = applied_best_hparams.get("run_id")
+    trial_num = applied_best_hparams.get("best_trial_number")
+    best_val = applied_best_hparams.get("best_validation_loss")
+    print("")
+    print(header)
+    if run_id is not None:
+        print(f"  run_id: {run_id}")
+    if trial_num is not None:
+        print(f"  best_trial_number: {trial_num}")
+    print(f"  best_validation_loss: {best_val}")
+    for key in APPLIED_HP_DISPLAY_KEYS:
+        if key in hp:
+            print(f"  {key}: {hp[key]}")
+    print("=" * (len(header) if len(header) > 40 else 40))
+    print("")
+
+
 def main():
     """Main training function."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(description="Train CNN model for lobe detection")
     parser.add_argument(
@@ -808,7 +637,7 @@ def main():
 
     # Load config
     config_path = resolve_path(args.config, project_root)
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
     if args.max_epochs is not None:
         config["training"]["num_epochs"] = args.max_epochs
@@ -818,19 +647,10 @@ def main():
         applied_best_hparams = apply_hyperparameters_from_mlflow_run(
             config, args.hp_from_run_id, tracking_uri=tracking_uri
         )
-        run_id = applied_best_hparams.get("run_id")
-        best_val = applied_best_hparams.get("best_validation_loss")
-        hp = applied_best_hparams.get("hyperparameters") or {}
-        print("")
-        print("=== Applied hyperparameters from MLflow run ===")
-        print(f"  run_id: {run_id}")
-        print(f"  best_validation_loss: {best_val}")
-        for key in ("loss_function", "learning_rate", "batch_size", "encoder_name", "unfreeze_after_epoch",
-                    "focal_alpha", "focal_gamma", "decoder_dropout", "weight_decay", "max_grad_norm"):
-            if key in hp:
-                print(f"  {key}: {hp[key]}")
-        print("===============================================")
-        print("")
+        _print_applied_hyperparameters(
+            applied_best_hparams,
+            "=== Applied hyperparameters from MLflow run ===",
+        )
     elif args.best_hparams:
         best_hp_path = args.best_hparams_path or (project_root / "configs" / "best_hyperparameters.yaml")
         best_hp_path = resolve_path(best_hp_path, project_root)
@@ -840,19 +660,10 @@ def main():
                 "Run tune_hyperparameters.py first or set --best-hparams-path."
             )
         applied_best_hparams = apply_best_hyperparameters(config, best_hp_path)
-        trial_num = applied_best_hparams.get("best_trial_number")
-        best_val = applied_best_hparams.get("best_validation_loss")
-        hp = applied_best_hparams.get("hyperparameters") or {}
-        print("")
-        print("=== Applied best hyperparameters (from best_hyperparameters.yaml) ===")
-        print(f"  best_trial_number: {trial_num}")
-        print(f"  best_validation_loss: {best_val}")
-        for key in ("loss_function", "learning_rate", "batch_size", "encoder_name", "unfreeze_after_epoch",
-                    "focal_alpha", "focal_gamma", "decoder_dropout", "weight_decay", "max_grad_norm"):
-            if key in hp:
-                print(f"  {key}: {hp[key]}")
-        print("===================================================================")
-        print("")
+        _print_applied_hyperparameters(
+            applied_best_hparams,
+            "=== Applied best hyperparameters (from best_hyperparameters.yaml) ===",
+        )
 
     # Determine mode
     mode = "dev" if args.dev else "production"
