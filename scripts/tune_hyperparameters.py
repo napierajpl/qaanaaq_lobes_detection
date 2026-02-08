@@ -48,11 +48,47 @@ TUNED_PARAM_KEYS = [
     "unfreeze_after_epoch",
 ]
 
+TRIALS_CSV_HEADER = [
+    "exported_at",
+    "session_id",
+    "session_started_at",
+    "study_name",
+    "mode",
+    "trial_number",
+    "state",
+    "value",
+    "datetime_start",
+    "datetime_complete",
+] + TUNED_PARAM_KEYS + [
+    "mlflow_experiment_id",
+    "mlflow_run_id",
+    "mlflow_run_name",
+    "mlflow_tracking_uri",
+    "model_architecture",
+    "model_in_channels",
+    "model_out_channels",
+    "training_iou_threshold",
+    "data_normalize_rgb",
+    "data_standardize_dem",
+    "data_standardize_slope",
+    "filtered_tiles_path",
+    "features_dir",
+    "targets_dir",
+    "proximity_token",
+    "pruned_epoch",
+    "pruned_val_loss",
+    "best_val_loss",
+    "best_val_mae",
+    "best_val_iou",
+]
+
 
 def _current_session_metadata(base_config: dict, mode: str) -> dict:
     """Metadata used to judge whether seeding from previous best makes sense."""
-    project_root = get_project_root(__file__)
-    paths = base_config["paths"][mode]
+    project_root = get_project_root(Path(__file__))
+    tile_size = base_config["data"].get("tile_size", 256)
+    path_key = mode if tile_size == 256 else f"{mode}_512"
+    paths = base_config["paths"][path_key]
     targets_dir = str(resolve_path(Path(paths["targets_dir"]), project_root))
     filtered_tiles = str(resolve_path(Path(paths["filtered_tiles"]), project_root))
     features_dir = str(resolve_path(Path(paths["features_dir"]), project_root))
@@ -259,50 +295,11 @@ def _append_study_trials_csv(
     Append this session's trials to a single CSV (append-only history).
     """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    header = [
-        "exported_at",
-        "session_id",
-        "session_started_at",
-        "study_name",
-        "mode",
-        "trial_number",
-        "state",
-        "value",
-        "datetime_start",
-        "datetime_complete",
-    ] + TUNED_PARAM_KEYS + [
-        # MLflow fields (from trial user_attrs if available)
-        "mlflow_experiment_id",
-        "mlflow_run_id",
-        "mlflow_run_name",
-        "mlflow_tracking_uri",
-        # Compatibility fields
-        "model_architecture",
-        "model_in_channels",
-        "model_out_channels",
-        "training_iou_threshold",
-        "data_normalize_rgb",
-        "data_standardize_dem",
-        "data_standardize_slope",
-        "filtered_tiles_path",
-        "features_dir",
-        "targets_dir",
-        "proximity_token",
-        # prune info
-        "pruned_epoch",
-        "pruned_val_loss",
-        # best metrics (if recorded)
-        "best_val_loss",
-        "best_val_mae",
-        "best_val_iou",
-    ]
-
     exported_at = dt.datetime.now().isoformat(timespec="seconds")
     file_exists = csv_path.exists() and csv_path.stat().st_size > 0
 
     with open(csv_path, "a", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=header)
+        writer = csv.DictWriter(f, fieldnames=TRIALS_CSV_HEADER)
         if not file_exists:
             writer.writeheader()
 
@@ -368,56 +365,20 @@ def _append_rows_from_existing_csv(
     if not rows:
         return 0
 
-    # Use the source file's exported_at as a stable session marker when available
     exported_at = (rows[0].get("exported_at") or dt.datetime.now().isoformat(timespec="seconds")).strip()
     session_id = f"import_{src_csv.stem}_{uuid.uuid4().hex[:8]}"
-
-    # Our destination writer schema (must match `_append_study_trials_csv`)
-    header = [
-        "exported_at",
-        "session_id",
-        "session_started_at",
-        "study_name",
-        "mode",
-        "trial_number",
-        "state",
-        "value",
-        "datetime_start",
-        "datetime_complete",
-    ] + TUNED_PARAM_KEYS + [
-        "mlflow_experiment_id",
-        "mlflow_run_id",
-        "mlflow_run_name",
-        "mlflow_tracking_uri",
-        "model_architecture",
-        "model_in_channels",
-        "model_out_channels",
-        "training_iou_threshold",
-        "data_normalize_rgb",
-        "data_standardize_dem",
-        "data_standardize_slope",
-        "filtered_tiles_path",
-        "features_dir",
-        "targets_dir",
-        "proximity_token",
-        "pruned_epoch",
-        "pruned_val_loss",
-        "best_val_loss",
-        "best_val_mae",
-        "best_val_iou",
-    ]
 
     dst_csv.parent.mkdir(parents=True, exist_ok=True)
     file_exists = dst_csv.exists() and dst_csv.stat().st_size > 0
     written = 0
 
     with open(dst_csv, "a", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=header)
+        writer = csv.DictWriter(f, fieldnames=TRIALS_CSV_HEADER)
         if not file_exists:
             writer.writeheader()
 
         for r in rows:
-            out = {k: "" for k in header}
+            out = {k: "" for k in TRIALS_CSV_HEADER}
             out.update(r)
             out["session_id"] = r.get("session_id") or session_id
             out["session_started_at"] = r.get("session_started_at") or exported_at
@@ -505,7 +466,7 @@ def main():
     """Main function for hyperparameter tuning."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(description="Hyperparameter tuning with Optuna")
     parser.add_argument(
@@ -586,7 +547,7 @@ def main():
 
     # Load base config
     config_path = resolve_path(args.config, project_root)
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         base_config = yaml.safe_load(f)
 
     mode = "dev" if args.dev else "production"
@@ -796,21 +757,23 @@ def main():
     logger.info("")
     logger.info("=" * 80)
 
-    # Save best parameters to file (real YAML)
+    _save_best_params(project_root, study)
+    logger.info("")
+    logger.info("To retrain with best hyperparameters, update training_config.yaml")
+    logger.info("or use the saved parameters from best_hyperparameters.yaml")
+
+
+def _save_best_params(project_root: Path, study: optuna.Study) -> None:
+    best_trial = study.best_trial
     best_params_path = project_root / "configs" / "best_hyperparameters.yaml"
     best_params = {
         "best_validation_loss": float(best_trial.value),
         "best_trial_number": int(best_trial.number),
         "hyperparameters": dict(best_trial.params),
     }
-
     with open(best_params_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(best_params, f, sort_keys=False)
-
     logger.info(f"Best hyperparameters saved to: {best_params_path}")
-    logger.info("")
-    logger.info("To retrain with best hyperparameters, update training_config.yaml")
-    logger.info("or use the saved parameters from best_hyperparameters.yaml")
 
 
 if __name__ == "__main__":
