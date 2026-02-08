@@ -10,7 +10,7 @@ def read_mlflow_value(file_path: Path) -> str:
     """Read a single value from MLflow param/metric file."""
     if not file_path.exists():
         return None
-    with open(file_path, 'r') as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         return f.read().strip()
 
 def get_run_data(run_id: str, experiment_id: str = "586083506121040615") -> dict:
@@ -39,7 +39,7 @@ def get_run_data(run_id: str, experiment_id: str = "586083506121040615") -> dict
             # MLflow metrics files have format: timestamp value
             # We want the last (most recent) value
             if metric_file.exists():
-                with open(metric_file, 'r') as f:
+                with open(metric_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                     if lines:
                         # Last line has the final value

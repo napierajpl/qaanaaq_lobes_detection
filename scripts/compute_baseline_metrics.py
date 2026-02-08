@@ -221,7 +221,7 @@ def main():
     """Main function."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(
         description="Compute baseline metrics for lobe detection"
@@ -255,7 +255,7 @@ def main():
 
     # Load config
     import yaml
-    with open(args.config) as f:
+    with open(args.config, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     # Determine paths
@@ -283,7 +283,7 @@ def main():
     if args.output:
         output_path = resolve_path(args.output, project_root)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         print(f"\nResults saved to: {output_path}")
 

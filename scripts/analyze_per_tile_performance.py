@@ -185,7 +185,7 @@ def main():
     """Main function - example usage."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(
         description="Analyze per-tile model performance against baselines"
@@ -263,7 +263,7 @@ def main():
     if args.output:
         output_path = resolve_path(args.output, project_root)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         print(f"\nResults saved to: {output_path}")
 

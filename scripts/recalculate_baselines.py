@@ -140,7 +140,7 @@ def recalculate_baselines(
         lobe_threshold: Threshold for lobe pixels
     """
     print(f"Loading filtered tiles from: {filtered_tiles_path}")
-    with open(filtered_tiles_path, 'r') as f:
+    with open(filtered_tiles_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     tiles = data.get("tiles", [])
@@ -201,7 +201,7 @@ def recalculate_baselines(
 
     # Save updated JSON
     print("\nSaving updated filtered tiles...")
-    with open(filtered_tiles_path, 'w') as f:
+    with open(filtered_tiles_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
     print("\nCompleted:")
@@ -214,7 +214,7 @@ def main():
     """Recalculate baseline metrics."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(
         description="Recalculate baseline metrics in filtered_tiles.json"

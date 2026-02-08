@@ -111,14 +111,14 @@ def test_config_file():
     logger.info("Testing config file loading")
     logger.info("=" * 60)
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
     config_path = project_root / "configs" / "training_config.yaml"
 
     if not config_path.exists():
         logger.warning(f"Config file not found: {config_path}")
         return
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     # Test UNet from config
