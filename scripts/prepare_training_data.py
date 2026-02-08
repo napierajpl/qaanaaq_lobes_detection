@@ -17,12 +17,19 @@ from src.utils.path_utils import get_project_root
 from tqdm import tqdm
 
 
+def _tile_dir(dev_mode: bool, tile_size: int) -> str:
+    base = "data/processed/tiles/dev" if dev_mode else "data/processed/tiles"
+    suffix = "train_512" if tile_size == 512 else "train"
+    return f"{base}/{suffix}"
+
+
 class PipelineRunner:
     """Runs training data preparation pipeline steps."""
 
-    def __init__(self, project_root: Path, dev_mode: bool = False):
+    def __init__(self, project_root: Path, dev_mode: bool = False, tile_size: int = 256):
         self.project_root = project_root
         self.dev_mode = dev_mode
+        self.tile_size = tile_size
         self.step_times = []
 
     def run_command(self, cmd: List[str], description: str) -> None:
@@ -104,16 +111,17 @@ class PipelineRunner:
             "Step 3: Creating VRT stack for feature layers (RGB + DEM + Slope)"
         )
 
+        tile_dir = _tile_dir(False, self.tile_size)
         # Step 4: Create tiles for features
         self.run_command(
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
                 "-i", "data/processed/raster/features_combined.vrt",
-                "-o", "data/processed/tiles/train/features",
-                "--tile-size", "256",
+                "-o", f"{tile_dir}/features",
+                "--tile-size", str(self.tile_size),
                 "--overlap", "0.3",
             ],
-            "Step 4: Creating tiles for features"
+            f"Step 4: Creating tiles for features ({self.tile_size}x{self.tile_size})"
         )
 
         # Step 5: Create tiles for targets
@@ -121,20 +129,20 @@ class PipelineRunner:
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
                 "-i", "data/processed/raster/rasterized_lobes_raw_by_code_proximity20px.tif",
-                "-o", "data/processed/tiles/train/targets",
-                "--tile-size", "256",
+                "-o", f"{tile_dir}/targets",
+                "--tile-size", str(self.tile_size),
                 "--overlap", "0.3",
             ],
-            "Step 5: Creating tiles for targets (proximity map 20px)"
+            f"Step 5: Creating tiles for targets (proximity map 20px, {self.tile_size}x{self.tile_size})"
         )
 
         # Step 6: Filter tiles (with baseline computation)
         self.run_command(
             [
                 "poetry", "run", "python", "scripts/filter_tiles.py",
-                "--features", "data/processed/tiles/train/features",
-                "--targets", "data/processed/tiles/train/targets",
-                "--output", "data/processed/tiles/train/filtered_tiles.json",
+                "--features", f"{tile_dir}/features",
+                "--targets", f"{tile_dir}/targets",
+                "--output", f"{tile_dir}/filtered_tiles.json",
                 "--exclude-background",
                 "--lobe-threshold", "5.0",  # For baseline computation
             ],
@@ -232,16 +240,17 @@ class PipelineRunner:
             "Step 4: Creating VRT stack for cropped feature layers (RGB + DEM + Slope)"
         )
 
+        tile_dir = _tile_dir(True, self.tile_size)
         # Step 5: Create tiles for features
         self.run_command(
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
                 "-i", "data/processed/raster/dev/features_combined_cropped1024x1024.vrt",
-                "-o", "data/processed/tiles/dev/train/features",
-                "--tile-size", "256",
+                "-o", f"{tile_dir}/features",
+                "--tile-size", str(self.tile_size),
                 "--overlap", "0.3",
             ],
-            "Step 5: Creating tiles for features"
+            f"Step 5: Creating tiles for features ({self.tile_size}x{self.tile_size})"
         )
 
         # Step 6: Create tiles for targets
@@ -249,20 +258,20 @@ class PipelineRunner:
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
                 "-i", "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024_proximity20px.tif",
-                "-o", "data/processed/tiles/dev/train/targets",
-                "--tile-size", "256",
+                "-o", f"{tile_dir}/targets",
+                "--tile-size", str(self.tile_size),
                 "--overlap", "0.3",
             ],
-            "Step 6: Creating tiles for targets (proximity map 20px)"
+            f"Step 6: Creating tiles for targets (proximity map 20px, {self.tile_size}x{self.tile_size})"
         )
 
         # Step 7: Filter tiles (with baseline computation)
         self.run_command(
             [
                 "poetry", "run", "python", "scripts/filter_tiles.py",
-                "--features", "data/processed/tiles/dev/train/features",
-                "--targets", "data/processed/tiles/dev/train/targets",
-                "--output", "data/processed/tiles/dev/train/filtered_tiles.json",
+                "--features", f"{tile_dir}/features",
+                "--targets", f"{tile_dir}/targets",
+                "--output", f"{tile_dir}/filtered_tiles.json",
                 "--exclude-background",
                 "--lobe-threshold", "5.0",  # For baseline computation
             ],
@@ -277,17 +286,13 @@ class PipelineRunner:
         print("Pipeline Complete")
         print("="*60)
 
+        tile_dir = _tile_dir(self.dev_mode, self.tile_size)
+        print(f"\nTiles created in: {tile_dir}/ ({self.tile_size}x{self.tile_size})")
+        print(f"  Features: {tile_dir}/features/")
+        print(f"  Targets: {tile_dir}/targets/")
+        print(f"  Filtered list: {tile_dir}/filtered_tiles.json")
         if self.dev_mode:
-            print("\nTiles created in: data/processed/tiles/dev/train/")
-            print("  Features: data/processed/tiles/dev/train/features/")
-            print("  Targets: data/processed/tiles/dev/train/targets/")
-            print("  Filtered list: data/processed/tiles/dev/train/filtered_tiles.json")
             print("\nNote: All processing done on 1024x1024 cropped files for quick testing")
-        else:
-            print("\nTiles created in: data/processed/tiles/train/")
-            print("  Features: data/processed/tiles/train/features/")
-            print("  Targets: data/processed/tiles/train/targets/")
-            print("  Filtered list: data/processed/tiles/train/filtered_tiles.json")
             print("\nNote: Feature VRT file: data/processed/raster/features_combined.vrt")
             print("      (Virtual file - references original rasters, saves disk space)")
 
@@ -307,7 +312,7 @@ def main():
     """Main entry point."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(
         description="Prepare training data pipeline",
@@ -318,10 +323,17 @@ def main():
         action="store_true",
         help="Run dev pipeline (cropped 1024x1024 files)",
     )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        choices=[256, 512],
+        default=256,
+        help="Tile size in pixels (256 or 512). Default: 256.",
+    )
 
     args = parser.parse_args()
 
-    runner = PipelineRunner(project_root, dev_mode=args.dev)
+    runner = PipelineRunner(project_root, dev_mode=args.dev, tile_size=args.tile_size)
 
     try:
         if args.dev:

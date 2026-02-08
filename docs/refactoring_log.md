@@ -8,7 +8,7 @@ Refactoring scripts following train_model.py approach and .cursorrules (short fu
 |--------|-------|--------|
 | train_model.py | 719 | Done (previous refactor) |
 | tune_hyperparameters.py | 817 | Done |
-| prepare_training_data.py | 348 | Pending |
+| prepare_training_data.py | 348 | Done |
 | compute_baseline_metrics.py | 305 | Pending |
 | analyze_per_tile_performance.py | 272 | Pending |
 | recalculate_baselines.py | 258 | Pending |
