@@ -91,8 +91,9 @@ def train_model_with_config(
     """
     project_root = get_project_root(Path(__file__))
 
-    # Determine paths
-    paths = config["paths"][mode]
+    tile_size = config["data"].get("tile_size", 256)
+    path_key = mode if tile_size == 256 else f"{mode}_512"
+    paths = config["paths"][path_key]
 
     filtered_tiles_path = resolve_path(Path(paths["filtered_tiles"]), project_root)
     features_dir = resolve_path(Path(paths["features_dir"]), project_root)
@@ -100,7 +101,7 @@ def train_model_with_config(
     models_dir = resolve_path(Path(paths["models_dir"]), project_root)
 
     logger.info("=== Training Configuration ===")
-    logger.info(f"Mode: {mode}")
+    logger.info(f"Mode: {mode} (tile size: {tile_size}x{tile_size})")
     logger.info(f"Filtered tiles: {filtered_tiles_path}")
     logger.info(f"Features dir: {features_dir}")
     logger.info(f"Targets dir: {targets_dir}")
@@ -158,6 +159,7 @@ def train_model_with_config(
         targets_dir,
         normalization_stats,
         batch_size=config["training"]["batch_size"],
+        tile_size=tile_size,
     )
 
     # Setup device
@@ -231,6 +233,22 @@ def train_model_with_config(
         run_name = f"unet_baseline_{mode}"
 
     with mlflow.start_run(run_name=run_name):
+
+        # Print run location at start so you can follow plots during training
+        active = mlflow.active_run()
+        if active is not None:
+            exp_id = active.info.experiment_id
+            run_id = active.info.run_id
+            tracking_uri = mlflow.get_tracking_uri()
+            print(
+                f"[MLFLOW][START] experiment_id={exp_id} run_id={run_id} run_name={run_name}",
+                flush=True,
+            )
+            if tracking_uri.startswith("file:"):
+                base = tracking_uri.replace("file:", "").rstrip("/")
+                plots_dir = f"{base}/{exp_id}/{run_id}/artifacts/plots"
+                print(f"  Plots (updated each epoch): {plots_dir}/loss.png", flush=True)
+            print(f"  tracking_uri={tracking_uri}", flush=True)
 
         # Log config
         log_training_config(config)
@@ -337,6 +355,18 @@ def train_model_with_config(
 
         logger.info("=== Starting Training ===")
         logger.info(f"IoU threshold: {iou_threshold}")
+
+        # Create initial placeholder plots so the printed path exists before first epoch
+        if trial is None:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel("Loss")
+            ax.set_title("Training started – plot will update after each epoch.")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            plt.tight_layout()
+            mlflow.log_figure(fig, "plots/loss.png")
+            plt.close(fig)
 
         # Encoder unfreezing configuration
         encoder_config = config["model"].get("encoder", {})
@@ -479,6 +509,13 @@ def train_model_with_config(
                 )
             print(summary, flush=True)
 
+            # Update training plots in MLflow after each epoch (non-Optuna only) so you can follow the printed path
+            if trial is None:
+                figures = create_training_plots(metrics_history, baseline_mae)
+                for plot_name, fig in figures.items():
+                    mlflow.log_figure(fig, f"plots/{plot_name}.png")
+                    plt.close(fig)
+
         # Log final metrics to MLflow
         mlflow.log_metric("best_val_loss", best_val_loss)
         mlflow.log_metric("best_val_mae", best_val_mae)
@@ -529,7 +566,6 @@ def train_model_with_config(
                 logger.info(f"Logged {plot_name} plot to MLflow")
 
             viz_config = config.get("visualization", {})
-            tile_size = config["data"].get("tile_size", 256)
             rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, mode, tile_size)
             if rep_tile_ids:
                 rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids)
