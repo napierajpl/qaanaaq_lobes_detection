@@ -35,3 +35,10 @@ def get_project_root(script_path: Path) -> Path:
         current = current.parent
 
     raise ValueError("Could not find project root (pyproject.toml)")
+
+
+def tile_dir_for_pipeline(dev_mode: bool, tile_size: int) -> str:
+    """Relative path to tile directory (e.g. data/processed/tiles/train or .../dev/train_512)."""
+    base = "data/processed/tiles/dev" if dev_mode else "data/processed/tiles"
+    suffix = "train_512" if tile_size == 512 else "train"
+    return f"{base}/{suffix}"
