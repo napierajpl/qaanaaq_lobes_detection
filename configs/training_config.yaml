@@ -19,7 +19,7 @@ model:
   decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
 
 training:
-  batch_size: 16
+  batch_size: 32
   num_epochs: 300  # Increased from 50 - U-Net typically needs 100+ epochs
   learning_rate: 0.05  
   optimizer: "Adam"
@@ -78,6 +78,12 @@ data:
   normalize_rgb: true
   standardize_dem: true
   standardize_slope: true
+  # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).
+  # Prepare that file with: scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml
+  use_background_and_augmentation: true
+  # Subsampling: use a random subset of train tiles each epoch (0.0–1.0). Reduces time per epoch and can reduce overtraining.
+  # 1.0 = use all tiles; e.g. 0.3 = 30% of tiles per epoch, different random subset each epoch.
+  train_subsample_ratio: 0.3
 
 # Representative tiles for post-training prediction visualization (logged to MLflow).
 # List tile indices (int) and/or tile_id strings (e.g. "tile_01234"). Empty list = skip.

@@ -27,6 +27,7 @@ from src.models.factory import create_model
 from src.training.loss_factory import create_criterion
 from src.training.dataloader import (
     load_filtered_tiles,
+    load_extended_training_tiles,
     create_data_splits,
     create_dataloaders,
 )
@@ -134,9 +135,24 @@ def train_model_with_config(
     )
     logger.info(f"Train: {len(train_tiles)}, Val: {len(val_tiles)}, Test: {len(test_tiles)}")
 
-    # Compute normalization statistics from training set
+    use_bg_aug = config["data"].get("use_background_and_augmentation", False)
+    if use_bg_aug:
+        extended_path = filtered_tiles_path.parent / "extended_training_tiles.json"
+        if not extended_path.exists():
+            raise FileNotFoundError(
+                f"Extended training set not found: {extended_path}. "
+                "Run scripts/prepare_extended_training_set.py first (e.g. after filter_tiles.py)."
+            )
+        train_tiles, ext_config, ext_stats = load_extended_training_tiles(extended_path)
+        logger.info(
+            f"Loaded extended training set from {extended_path}: {len(train_tiles)} tiles "
+            f"(stats: {ext_stats})"
+        )
+
+    # Compute normalization statistics from lobe training tiles only (exclude background/augmented for stats)
     logger.info("Computing normalization statistics...")
-    train_feature_paths = [features_dir / tile["features_path"] for tile in train_tiles]
+    tiles_for_stats = [t for t in train_tiles if t.get("role") == "lobe"] if use_bg_aug else train_tiles
+    train_feature_paths = [features_dir / tile["features_path"] for tile in tiles_for_stats]
     normalization_stats = compute_statistics(train_feature_paths)
     dem_mean = normalization_stats.get('dem', {}).get('mean', 'N/A')
     dem_std = normalization_stats.get('dem', {}).get('std', 'N/A')
@@ -151,7 +167,14 @@ def train_model_with_config(
     logger.info(f"DEM stats: mean={dem_mean_str}, std={dem_std_str}")
     logger.info(f"Slope stats: mean={slope_mean_str}, std={slope_std_str}")
 
-    # Create data loaders
+    train_subsample_ratio = config["data"].get("train_subsample_ratio", 1.0)
+    if train_subsample_ratio < 1.0:
+        logger.info(
+            "Train subsampling: %.0f%% of tiles per epoch (new random subset each epoch)",
+            100 * train_subsample_ratio,
+        )
+
+    # Create data loaders (no on-the-fly augmentation when using extended set; augmentation is pre-written)
     logger.info("Creating data loaders...")
     train_loader, val_loader = create_dataloaders(
         train_tiles,
@@ -290,6 +313,8 @@ def train_model_with_config(
         mlflow.log_param("trainable_params", trainable_params)
         mlflow.log_param("num_train_tiles", len(train_tiles))
         mlflow.log_param("num_val_tiles", len(val_tiles))
+        if train_subsample_ratio < 1.0:
+            mlflow.log_param("data.train_subsample_ratio", train_subsample_ratio)
 
         # Log Optuna trial info if available
         if trial is not None:
@@ -379,6 +404,21 @@ def train_model_with_config(
         encoder_unfrozen = False
 
         for epoch in range(1, config["training"]["num_epochs"] + 1):
+            if train_subsample_ratio < 1.0:
+                rng = np.random.default_rng(epoch)
+                n = max(1, int(len(train_tiles) * train_subsample_ratio))
+                indices = rng.choice(len(train_tiles), size=n, replace=False)
+                epoch_tiles = [train_tiles[i] for i in indices]
+                train_loader, _ = create_dataloaders(
+                    epoch_tiles,
+                    val_tiles,
+                    features_dir,
+                    targets_dir,
+                    normalization_stats,
+                    batch_size=config["training"]["batch_size"],
+                    tile_size=tile_size,
+                )
+
             # Unfreeze encoder if specified epoch reached
             if (unfreeze_after_epoch > 0 and
                 epoch == unfreeze_after_epoch and
