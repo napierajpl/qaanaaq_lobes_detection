@@ -6,6 +6,21 @@ import torch
 import torch.nn as nn
 
 
+def _bound_proximity(
+    x: torch.Tensor,
+    max_val: float,
+    activation: str,
+    temperature: float,
+) -> torch.Tensor:
+    if activation == "clamp":
+        return x.clamp(0.0, max_val)
+    if activation == "sigmoid":
+        return torch.sigmoid(x) * max_val
+    if activation == "sigmoid_steep":
+        return torch.sigmoid(x / max(temperature, 1e-6)) * max_val
+    return x.clamp(0.0, max_val)
+
+
 class DoubleConv(nn.Module):
     """Double convolution block: Conv -> BN -> ReLU -> Conv -> BN -> ReLU -> Dropout."""
 
@@ -48,6 +63,9 @@ class UNet(nn.Module):
         out_channels: int = 1,
         base_channels: int = 64,
         dropout: float = 0.2,
+        proximity_max: float = 0,
+        output_activation: str = "clamp",
+        sigmoid_temperature: float = 0.3,
     ):
         """
         Initialize U-Net.
@@ -57,8 +75,14 @@ class UNet(nn.Module):
             out_channels: Number of output channels (default: 1 for regression)
             base_channels: Base number of channels (default: 64)
             dropout: Dropout probability for regularization (default: 0.2)
+            proximity_max: If > 0, bound output to [0, proximity_max] (default: 0 = no bound)
+            output_activation: "clamp" | "sigmoid" | "sigmoid_steep". clamp = no saturation; sigmoid_steep = larger gradients near 0/20.
+            sigmoid_temperature: For sigmoid_steep, scale raw logits (default 0.3 = steeper).
         """
         super().__init__()
+        self.proximity_max = proximity_max
+        self.output_activation = (output_activation or "clamp").lower()
+        self.sigmoid_temperature = sigmoid_temperature
 
         # Encoder (contracting path) - no dropout (keep features)
         self.enc1 = DoubleConv(in_channels, base_channels, dropout=0.0)
@@ -115,7 +139,7 @@ class UNet(nn.Module):
         dec1 = torch.cat([dec1, enc1], dim=1)
         dec1 = self.dec1(dec1)
 
-        # Output
         output = self.final_conv(dec1)
-
+        if self.proximity_max > 0:
+            output = _bound_proximity(output, self.proximity_max, self.output_activation, self.sigmoid_temperature)
         return output

@@ -39,6 +39,9 @@ def create_model(config: Dict[str, Any]) -> nn.Module:
             out_channels=config.get("out_channels", 1),
             base_channels=config.get("base_channels", 64),
             dropout=config.get("dropout", 0.2),
+            proximity_max=float(config.get("proximity_max", 20)),
+            output_activation=config.get("output_activation", "clamp"),
+            sigmoid_temperature=float(config.get("sigmoid_temperature", 0.3)),
         )
     elif architecture == "satlaspretrain_unet":
         logger.info("Creating SatlasPretrain U-Net architecture")
@@ -60,6 +63,9 @@ def create_model(config: Dict[str, Any]) -> nn.Module:
                 f"Supported: {valid_encoders}"
             )
 
+        ppm_bins_raw = config.get("ppm_bins", (1, 2, 3, 6))
+        ppm_bins = tuple(ppm_bins_raw) if not isinstance(ppm_bins_raw, tuple) else ppm_bins_raw
+
         return SatlasPretrainUNet(
             in_channels=config.get("in_channels", 5),
             out_channels=config.get("out_channels", 1),
@@ -67,6 +73,13 @@ def create_model(config: Dict[str, Any]) -> nn.Module:
             pretrained=encoder_config.get("pretrained", True),
             freeze_encoder=encoder_config.get("freeze_encoder", True),
             decoder_dropout=config.get("decoder_dropout", 0.2),
+            use_se=config.get("use_se", False),
+            use_ppm=config.get("use_ppm", False),
+            ppm_bins=ppm_bins,
+            se_reduction=config.get("se_reduction", 16),
+            proximity_max=float(config.get("proximity_max", 20)),
+            output_activation=config.get("output_activation", "clamp"),
+            sigmoid_temperature=float(config.get("sigmoid_temperature", 0.3)),
         )
     else:
         raise ValueError(f"Unknown architecture: {architecture}. Supported: 'unet', 'satlaspretrain_unet'")

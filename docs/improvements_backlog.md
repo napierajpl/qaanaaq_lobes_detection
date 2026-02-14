@@ -1,6 +1,6 @@
 # Improvements Backlog
 
-This file tracks potential improvements, ideas, and future work for the lobe detection project. Items are organized by priority and category.
+This file tracks potential improvements, ideas, and future work for the lobe detection project. Items are organized by priority and category. **Implemented items** are listed in **`docs/implemented_features_list.md`**.
 
 **Literature alignment (2026-02):** Priorities are aligned with `docs/literature/similar_tasks_imbalance_linear_structures.md`, `docs/literature/gully_erfnet_bibliography_analysis.md`, and **`docs/literature/bibliography_deep_dive_30min.md`** (30-min sustained session 2026-02-03). Dataset size is unlikely the bottleneck; **loss design** and optionally binary targets or auxiliary heads are the main levers. The **loss order below** follows Azad et al. 2023 (25-loss survey) plus gully/road literature: best evidence for small foreground, linear structures, and imbalance.
 
@@ -38,10 +38,10 @@ This file tracks potential improvements, ideas, and future work for the lobe det
    - **Status**: Not implemented
    - **Reference**: `docs/literature/similar_tasks_imbalance_linear_structures.md` §2; `docs/literature/bibliography_deep_dive_30min.md` §1.2
 
-5. **SE + Pyramid Pooling Module (PPM)** (architecture — try after first loss wave)
+5. **SE + Pyramid Pooling Module (PPM)** (architecture — try after first loss wave) ✅ **IMPLEMENTED**
    - **Why**: Gully-ERFNet adds SE (channel attention) and PPM for multi-scale context; same linear/thin/imbalance setting. Lightweight; proven for gully extraction. Don’t wait for all 8 loss experiments — re-evaluate after items 1–4; if loss gains are small, try SE+PPM next.
    - **What**: Add SE blocks and PPM between encoder and decoder (e.g. after SatlasPretrain encoder); compare val MAE vs baseline. Yu et al. (IEEE JSTARS 2018) is the RS-oriented PPM source.
-   - **Status**: Not implemented
+   - **Status**: ✅ Implemented. Config: `model.use_se`, `model.use_ppm` (flat); optional `ppm_bins`, `se_reduction`. Ablation: set true/false per run. See `docs/project_features.md` §1 and §14.
    - **Reference**: `docs/literature/similar_tasks_imbalance_linear_structures.md` §4 Gully-ERFNet; `docs/literature/gully_erfnet_bibliography_analysis.md`
 
 6. **Jaccard (IoU) loss**
@@ -70,24 +70,7 @@ This file tracks potential improvements, ideas, and future work for the lobe det
 
 ### Architecture
 
-10. **Pretrained Encoder** ⭐ (High Impact Expected) ✅ **IMPLEMENTED**
-   - **Why**: Better feature extraction from start, transfer learning benefits, proven to improve remote sensing segmentation
-   - **What**: Replace U-Net encoder with pretrained backbone:
-     - **Option A (Easiest)**: Use `segmentation-models-pytorch` with ResNet34/ResNet50 encoder (ImageNet pretrained) - Not implemented
-     - **Option B (Best for RS)**: Use SatlasPretrain ResNet50 (trained on 302M remote sensing labels) ✅ **IMPLEMENTED**
-     - **Option C**: Use TorchGeo pretrained models for multispectral imagery - Not implemented
-   - **Implementation Notes**:
-     - Adapt first conv layer for 5 channels (RGB+DEM+Slope) instead of 3 ✅
-     - Freeze encoder initially, then fine-tune after convergence ✅
-     - Expected improvement: 1.7-2.3% IoU gain (based on ISPRS studies)
-   - **Status**: ✅ Implemented - Ready for testing (requires satlaspretrain-models installation)
-   - **Implementation Summary**: See `docs/implementation_plans/satlaspretrain_implementation_summary.md`
-   - **Implementation Plan**: See `docs/implementation_plans/satlaspretrain_integration.md`
-   - **References**:
-     - Identified in daily diary 2026-01-21
-     - Research: "Semantic Segmentation of High-Resolution Remote Sensing Images with Improved U-Net Based on Transfer Learning"
-     - SatlasPretrain: https://blog.allenai.org/satlaspretrain-models-foundation-models-for-satellite-and-aerial-imagery
-     - Segmentation Models PyTorch: https://github.com/qubvel/segmentation_models.pytorch
+- **Pretrained Encoder (SatlasPretrain)** — Implemented. See `docs/implemented_features_list.md`. Option A (segmentation-models-pytorch) and Option C (TorchGeo) not implemented.
 
 ## Medium Priority
 
@@ -118,22 +101,16 @@ Reference: `docs/literature/bibliography_deep_dive_30min.md` §1.4, §1.5, §9.
 
 ### Data
 
-13. **Data Augmentation**
-   - **Why**: Increase effective dataset size, improve generalization
-   - **What**:
-     - Geometric: horizontal/vertical flips, rotations (90°, 180°, 270°)
-     - Photometric (RGB only): brightness, contrast adjustments
-     - Note: Don't augment DEM/Slope (preserve physical meaning)
-   - **Status**: Not implemented
-   - **Reference**: Discussed in conversation 2026-01-22
 
 14. **Class-Balanced Sampling**
    - **Why**: Most batches are mostly background, model sees few lobe examples
    - **What**: Oversample tiles with high lobe density during training
    - **Status**: Not implemented
 
-15. **Prediction Tile Visualization + Mosaic Raster Export**
-   - **Why**: We need a quick, visual sanity check of model outputs across the full AOI (not just scalar metrics).
+
+
+16. **Full Mosaic / GeoTIFF Export** (prediction tile visualization)
+   - **Why**: Visual sanity check of model outputs across the full AOI (not just scalar metrics). Per-tile representative visualization is already implemented (see `docs/implemented_features_list.md`).
    - **What**:
      - Save per-tile predictions as GeoTIFF tiles (aligned to target/proximity tiles)
      - Stitch tiles back into a single georeferenced raster (mosaic) for the AOI
@@ -141,27 +118,17 @@ Reference: `docs/literature/bibliography_deep_dive_30min.md` §1.4, §1.5, §9.
    - **Open questions**:
      - How expensive is writing all tiles + mosaicking for production? (disk + time)
      - Do we export full float raster, or a compressed/quantized product for visualization?
-   - **Status**: Representative-tile visualization implemented (Jan 2026). After each training run (non-Optuna), MLflow artifacts include prediction visualizations for a configurable list of tiles (`configs/training_config.yaml` → `visualization.representative_tile_ids`). Each figure shows RGB, proximity (target), and prediction side-by-side. Full mosaic/GeoTIFF export not implemented.
+   - **Status**: Not implemented
 
-### Tile Size
 
-16. **Experiment with Larger Tiles**
-   - **Why**: More spatial context around lobes, better for larger features
-   - **What**: Try 384×384 or 512×512 tiles (requires retiling, reduces batch size)
-   - **Status**: Not tested
-   - **Note**: Lower priority - current issue is learning, not context
 
 ### Research / Literature
 
-16. **Literature search: similar tasks (linear/elongated forms, severe background–target imbalance)** ✅ **DONE**
-   - **Why**: Our setup (elongated glacial lobes, ~86% background vs ~14% lobe/proximity, proximity regression) may have direct analogues in other domains.
-   - **Deliverable**: `docs/literature/similar_tasks_imbalance_linear_structures.md` with: problem similarity, loss/architecture/training choices, dataset size comparison, and what we could adopt.
-   - **Status**: ✅ Completed — 4 papers: ResUNet-a (Generalized Dice, distance transform), Boundary-Aware U-Net glacier (boundary-aware loss), Unified Focal Loss (UFL), Gully-ERFNet (ACL = Dice+Focal, SE+PPM). Priorities in this backlog are aligned with literature "Next steps."
-   - **Reference**: 2026-02-02
+- **Literature search: similar tasks (linear/elongated, imbalance)** — Done. See `docs/implemented_features_list.md` and `docs/literature/similar_tasks_imbalance_linear_structures.md`.
 
 ### Post-processing (literature-backed)
 
-17. **Post-processing for lobe maps (small-object/hole removal)**
+19. **Post-processing for lobe maps (small-object/hole removal)**
    - **Why**: Gully-ERFNet uses remove_small_objects and remove_small_holes (e.g. 1000 px) plus road-buffer exclusion; improves precision/recall. We could apply similar cleanup to thresholded lobe predictions for final maps.
    - **What**: After inference, optionally apply morphology (remove_small_objects, remove_small_holes) to binarized prediction; optionally mask known non-lobe features (roads, etc.) if vector data available.
    - **Status**: Not implemented
@@ -191,48 +158,35 @@ Source: `docs/literature/bibliography_deep_dive_30min.md` §9. Skeleton Recall, 
 
 ## Low Priority / Future Work
 
-18. **Strip Convolutions for Linear Features**
+20. **Strip Convolutions for Linear Features**
    - **Why**: Lobes are linear/elongated features; strip convolutions excel at high aspect ratio objects.
    - **What**: Incorporate strip convolution concepts from Strip R-CNN (82.75% mAP on DOTA-v1.0).
    - **Complexity**: High — requires architecture modifications.
    - **Reference**: Strip R-CNN paper - "Large Strip Convolution for Remote Sensing Object Detection"
    - **Status**: Research phase
 
-19. **Two-Stage Training**
+21. **Two-Stage Training**
    - **Why**: Separate detection from regression; literature (ResUNet-a) uses multi-task (boundary → distance → mask).
    - **What**: Stage 1: Binary segmentation (lobe vs background) with Dice/Focal or ACL; Stage 2: Fine-tune for proximity on lobe pixels or add auxiliary proximity head.
    - **Status**: Not implemented
    - **Complexity**: High — requires pipeline changes
 
-20. **Attention Mechanisms**
+22. **Attention Mechanisms**
    - **Why**: Focus model attention on important regions; SE+PPM is High Priority item 5.
    - **What**: Other attention (spatial, etc.) if SE+PPM is insufficient.
    - **Status**: Not implemented
 
-21. **Deep Supervision**
+23. **Deep Supervision**
    - **Why**: Add auxiliary losses at intermediate layers.
    - **What**: Compute loss at multiple decoder levels.
    - **Status**: Not implemented
 
-22. **Ensemble Methods**
+24. **Ensemble Methods**
    - **Why**: Combine multiple models for better predictions.
    - **What**: Train multiple models, average predictions.
    - **Status**: Not implemented
 
-## Completed / In Progress
-
-- ✅ Dropout added to decoder (0.2)
-- ✅ Gradient clipping implemented
-- ✅ Learning rate scheduling infrastructure
-- ✅ Early stopping
-- ✅ Per-tile baseline comparison
-- ✅ Training visualization module
-- ✅ MLflow integration
-- ✅ SatlasPretrain U-Net architecture with pretrained encoders (Jan 23, 2026)
-  - Model factory system for architecture switching
-  - 5-channel input adapter
-  - Encoder freezing/unfreezing support
-  - Support for ResNet50, ResNet152, Swin-v2-Base, Swin-v2-Tiny
+Implemented items (dropout, gradient clipping, LR scheduling, early stopping, per-tile baseline, training visualization, MLflow, SatlasPretrain U-Net) are listed in **`docs/implemented_features_list.md`**.
 
 ## Scored & ranked (Performance 0–5 × Effort 0–5, sort by sum)
 
@@ -251,6 +205,7 @@ Source: `docs/literature/bibliography_deep_dive_30min.md` §9. Skeleton Recall, 
 | 8 | 7 | 3 | 4 | **Learning Rate Adjustments** — Lower LR or better schedule; config + scheduler. |
 | 8 | 7 | 3 | 4 | **Data Augmentation** — Flips, rotations, photometric; care with DEM. |
 | 8 | 7 | 3 | 4 | **Class-Balanced Sampling** — Oversample lobe-rich tiles; sampler change. |
+| 8 | 7 | 4 | 3 | **Background tiles + augment lobe tiles only** — 4× background tiles, 4× augmentation for lobe tiles only; slope becomes useful. |
 | 8 | 7 | 3 | 4 | **Post-processing (small-object/hole removal)** — Morphology at inference; no training change. |
 | 8 | 7 | 2 | 5 | **Increase Encouragement Weight** — Change one constant (e.g. 50 or 100). |
 | 14 | 7 | 4 | 3 | **GapLoss / NeighborLoss** — Road RS; impls exist; integrate. |
@@ -267,12 +222,12 @@ Source: `docs/literature/bibliography_deep_dive_30min.md` §9. Skeleton Recall, 
 | 22 | 4 | 2 | 2 | **Experiment with Larger Tiles** — Retiling + batch size. |
 | 26 | 3 | 0 | 3 | **Prediction Tile Visualization + Mosaic Raster Export** — No model performance change; tooling. |
 
-**Done (not scored):** Pretrained Encoder ✅, Literature search ✅.
+**Done (not scored):** See `docs/implemented_features_list.md` (Pretrained Encoder, Literature search, and other completed items).
 
 ## Notes
 
 - **Priority rationale (2026-02-03):** Loss order follows Azad et al. 2023 (Synapse small organs: Tversky/Focal Tversky best, Jaccard second) plus gully/glacier literature (ACL, GDL, Boundary). Topology/connectivity losses (Skeleton Recall, clDice, Road-topology) are Medium, to try after region/boundary losses.
 - Literature: `docs/literature/similar_tasks_imbalance_linear_structures.md`, `docs/literature/gully_erfnet_bibliography_analysis.md`, `docs/literature/bibliography_deep_dive_30min.md`.
 - Dataset size is unlikely the bottleneck; **loss design** and optionally binary targets or auxiliary heads are the main levers.
-- When an item is implemented, move it to "Completed" and reference the daily diary entry.
+- When an item is implemented, add it to `docs/implemented_features_list.md` and remove or shorten its entry here.
 - **Scored & ranked** above: use **Perf + Effort** sum to pick quick wins (e.g. sum ≥ 9 first: ACL, Jaccard, Tversky, GDL, Combo).

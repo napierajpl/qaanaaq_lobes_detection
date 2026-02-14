@@ -82,6 +82,13 @@ class SatlasPretrainUNet(nn.Module):
         pretrained: bool = True,
         freeze_encoder: bool = True,
         decoder_dropout: float = 0.2,
+        use_se: bool = False,
+        use_ppm: bool = False,
+        ppm_bins: tuple = (1, 2, 3, 6),
+        se_reduction: int = 16,
+        proximity_max: float = 0,
+        output_activation: str = "clamp",
+        sigmoid_temperature: float = 0.3,
     ):
         """
         Initialize SatlasPretrain U-Net.
@@ -93,12 +100,24 @@ class SatlasPretrainUNet(nn.Module):
             pretrained: Whether to use pretrained weights (default: True)
             freeze_encoder: Whether to freeze encoder weights initially (default: True)
             decoder_dropout: Dropout probability in decoder (default: 0.2)
+            use_se: Whether to use Squeeze-and-Excitation on enc4 before bottleneck (default: False)
+            use_ppm: Whether to use Pyramid Pooling Module on enc4 before bottleneck (default: False)
+            ppm_bins: Pool sizes for PPM (default: (1, 2, 3, 6))
+            se_reduction: Channel reduction ratio for SE (default: 16)
+            proximity_max: If > 0, bound output to [0, proximity_max] (default: 0 = no bound)
+            output_activation: "clamp" | "sigmoid" | "sigmoid_steep"
+            sigmoid_temperature: For sigmoid_steep (default 0.3).
         """
         super().__init__()
 
+        self.proximity_max = proximity_max
+        self.output_activation = (output_activation or "clamp").lower()
+        self.sigmoid_temperature = sigmoid_temperature
         self.encoder_name = encoder_name
         self.pretrained = pretrained
         self.freeze_encoder = freeze_encoder
+        self.use_se = use_se
+        self.use_ppm = use_ppm
 
         # Input adapter for 5-channel input
         self.input_adapter = InputAdapter(in_channels=in_channels, out_channels=3)
@@ -108,6 +127,20 @@ class SatlasPretrainUNet(nn.Module):
 
         # Get encoder feature dimensions
         encoder_dims = self._get_encoder_dims(encoder_name)
+        c = encoder_dims[3]
+
+        if use_ppm:
+            from src.models.se_ppm import PyramidPoolingModule
+            bins = tuple(ppm_bins) if not isinstance(ppm_bins, tuple) else ppm_bins
+            self.ppm = PyramidPoolingModule(c, bins=bins)
+        else:
+            self.ppm = None
+
+        if use_se:
+            from src.models.se_ppm import SELayer
+            self.se = SELayer(c, reduction=se_reduction)
+        else:
+            self.se = None
 
         # Build decoder
         self.decoder = self._build_decoder(encoder_dims, decoder_dropout)
@@ -253,8 +286,13 @@ class SatlasPretrainUNet(nn.Module):
         enc3 = encoder_features[2]
         enc4 = encoder_features[3]  # Deepest (smallest spatial size)
 
-        # Bottleneck
-        bottleneck = self.decoder["bottleneck"](enc4)
+        bottleneck_input = enc4
+        if self.use_ppm:
+            bottleneck_input = self.ppm(bottleneck_input)
+        if self.use_se:
+            bottleneck_input = self.se(bottleneck_input)
+
+        bottleneck = self.decoder["bottleneck"](bottleneck_input)
 
         # Decoder with skip connections
         # Match sizes before concatenation
@@ -278,13 +316,17 @@ class SatlasPretrainUNet(nn.Module):
         dec1 = torch.cat([dec1, enc1], dim=1)
         dec1 = self.decoder["dec1"](dec1)
 
-        # Output
         output = self.final_conv(dec1)
-
-        # Ensure output matches input spatial dimensions
+        if self.proximity_max > 0:
+            from src.models.architectures import _bound_proximity
+            output = _bound_proximity(
+                output,
+                self.proximity_max,
+                self.output_activation,
+                self.sigmoid_temperature,
+            )
         if output.shape[2:] != input_size:
             output = torch.nn.functional.interpolate(
                 output, size=input_size, mode='bilinear', align_corners=False
             )
-
         return output

@@ -138,20 +138,23 @@ def train_model_with_config(
     use_bg_aug = config["data"].get("use_background_and_augmentation", False)
     if use_bg_aug:
         extended_path = filtered_tiles_path.parent / "extended_training_tiles.json"
-        if not extended_path.exists():
-            raise FileNotFoundError(
-                f"Extended training set not found: {extended_path}. "
-                "Run scripts/prepare_extended_training_set.py first (e.g. after filter_tiles.py)."
+        if extended_path.exists():
+            train_tiles, ext_config, ext_stats = load_extended_training_tiles(extended_path)
+            logger.info(
+                f"Loaded extended training set from {extended_path}: {len(train_tiles)} tiles "
+                f"(stats: {ext_stats})"
             )
-        train_tiles, ext_config, ext_stats = load_extended_training_tiles(extended_path)
-        logger.info(
-            f"Loaded extended training set from {extended_path}: {len(train_tiles)} tiles "
-            f"(stats: {ext_stats})"
-        )
+        else:
+            logger.warning(
+                "use_background_and_augmentation is true but extended_training_tiles.json not found at %s; "
+                "using filtered_tiles split only. For background + augmentation run prepare_extended_training_set.py.",
+                extended_path,
+            )
 
     # Compute normalization statistics from lobe training tiles only (exclude background/augmented for stats)
     logger.info("Computing normalization statistics...")
-    tiles_for_stats = [t for t in train_tiles if t.get("role") == "lobe"] if use_bg_aug else train_tiles
+    extended_loaded = use_bg_aug and (filtered_tiles_path.parent / "extended_training_tiles.json").exists()
+    tiles_for_stats = [t for t in train_tiles if t.get("role") == "lobe"] if extended_loaded else train_tiles
     train_feature_paths = [features_dir / tile["features_path"] for tile in tiles_for_stats]
     normalization_stats = compute_statistics(train_feature_paths)
     dem_mean = normalization_stats.get('dem', {}).get('mean', 'N/A')
@@ -737,6 +740,13 @@ def main():
         help="Override num_epochs from config (e.g. 1 for a quick dry run)",
     )
     parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=None,
+        choices=[256, 512],
+        help="Override data tile size from config (e.g. 256 for dev when dev/train_512 does not exist)",
+    )
+    parser.add_argument(
         "--best-hparams",
         action="store_true",
         help="Override config with best hyperparameters from configs/best_hyperparameters.yaml",
@@ -763,6 +773,8 @@ def main():
         config = yaml.safe_load(f)
     if args.max_epochs is not None:
         config["training"]["num_epochs"] = args.max_epochs
+    if args.tile_size is not None:
+        config["data"]["tile_size"] = args.tile_size
     applied_best_hparams = None
     tracking_uri = config.get("mlflow", {}).get("tracking_uri")
     if args.hp_from_run_id:

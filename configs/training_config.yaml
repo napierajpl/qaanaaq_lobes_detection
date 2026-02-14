@@ -17,6 +17,16 @@ model:
     freeze_encoder: true  # Freeze encoder initially, unfreeze after convergence
     unfreeze_after_epoch: 10  # Unfreeze encoder after this epoch (0 = never unfreeze)
   decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
+  # Optional SE + PPM (Gully-ERFNet style). Ablation: set use_se/use_ppm true/false as needed.
+  use_se: true
+  use_ppm: true
+  # ppm_bins: [1, 2, 3, 6]  # optional; default (1,2,3,6)
+  # se_reduction: 16  # optional; default 16
+  # Bound output to target range [0, 20] (proximity maps). Avoids negative predictions.
+  proximity_max: 20  # 0 = no bound
+  # output_activation: "clamp" | "sigmoid" | "sigmoid_steep". clamp = no saturation at 0/20 (default). sigmoid_steep = steeper curve, larger gradients near extremes.
+  output_activation: clamp
+  # sigmoid_temperature: 0.3  # for sigmoid_steep only; smaller = steeper
 
 training:
   batch_size: 32
