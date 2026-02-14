@@ -14,7 +14,7 @@ import rasterio.warp
 
 def main():
     """Resample raster to match reference raster."""
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = BaseCLIParser(
         description="Resample a raster to match another raster's transform, CRS, and dimensions",

@@ -27,20 +27,13 @@ class TileDataset(Dataset):
         features_base_dir: Path,
         targets_base_dir: Path,
         normalization_stats: Optional[dict] = None,
+        tile_size: int = 256,
     ):
-        """
-        Initialize dataset.
-
-        Args:
-            tile_list: List of tile dictionaries from filtered_tiles.json
-            features_base_dir: Base directory for feature tiles
-            targets_base_dir: Base directory for target tiles
-            normalization_stats: Statistics for DEM/slope normalization
-        """
         self.tile_list = tile_list
         self.features_base_dir = Path(features_base_dir)
         self.targets_base_dir = Path(targets_base_dir)
         self.normalization_stats = normalization_stats or {}
+        self.tile_size = tile_size
 
     def __len__(self) -> int:
         return len(self.tile_list)
@@ -75,12 +68,10 @@ class TileDataset(Dataset):
         with rasterio.open(targets_path) as src:
             target = src.read(1)  # Shape: (H, W)
 
-        # Note: All tiles should be 256x256 due to tiling logic that adjusts
-        # overlap for boundary tiles. If a tile is smaller, it's a bug in tiling.
-        assert features.shape[1] == 256 and features.shape[2] == 256, \
-            f"Feature tile size mismatch: {features.shape[1]}x{features.shape[2]}, expected 256x256"
-        assert target.shape[0] == 256 and target.shape[1] == 256, \
-            f"Target tile size mismatch: {target.shape}, expected 256x256"
+        assert features.shape[1] == self.tile_size and features.shape[2] == self.tile_size, \
+            f"Feature tile size mismatch: {features.shape[1]}x{features.shape[2]}, expected {self.tile_size}x{self.tile_size}"
+        assert target.shape[0] == self.tile_size and target.shape[1] == self.tile_size, \
+            f"Target tile size mismatch: {target.shape}, expected {self.tile_size}x{self.tile_size}"
 
         # Normalize features
         # RGB bands (0, 1, 2)
@@ -171,27 +162,14 @@ def create_dataloaders(
     normalization_stats: dict,
     batch_size: int = 16,
     num_workers: int = 0,
+    tile_size: int = 256,
 ) -> Tuple[DataLoader, DataLoader]:
-    """
-    Create train and validation dataloaders.
-
-    Args:
-        train_tiles: Training tile list
-        val_tiles: Validation tile list
-        features_base_dir: Base directory for feature tiles
-        targets_base_dir: Base directory for target tiles
-        normalization_stats: Statistics for normalization
-        batch_size: Batch size
-        num_workers: Number of worker processes
-
-    Returns:
-        Tuple of (train_loader, val_loader)
-    """
     train_dataset = TileDataset(
         train_tiles,
         features_base_dir,
         targets_base_dir,
         normalization_stats,
+        tile_size=tile_size,
     )
 
     val_dataset = TileDataset(
@@ -199,6 +177,7 @@ def create_dataloaders(
         features_base_dir,
         targets_base_dir,
         normalization_stats,
+        tile_size=tile_size,
     )
 
     train_loader = DataLoader(

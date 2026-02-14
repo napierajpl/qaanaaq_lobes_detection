@@ -416,3 +416,34 @@ class CombinedLoss(nn.Module):
         regression_loss = self.regression_loss(pred, target)
 
         return self.iou_weight * iou_loss + self.regression_weight * regression_loss
+
+
+class ACLLoss(nn.Module):
+    """
+    Adaptive Correction Loss (ACL): λ·Dice + (1−λ)·Focal.
+
+    From Gully-ERFNet (Li et al., IJDE 2025) for linear structures, severe imbalance,
+    and label noise. Combines overlap (Dice) with hard-example focus (Focal).
+    """
+
+    def __init__(
+        self,
+        acl_lambda: float = 0.5,
+        threshold: float = 5.0,
+        dice_smooth: float = 1e-6,
+        focal_alpha: float = 0.75,
+        focal_gamma: float = 2.0,
+    ):
+        super().__init__()
+        self.acl_lambda = acl_lambda
+        self.dice_loss = DiceLoss(threshold=threshold, smooth=dice_smooth)
+        self.focal_loss = FocalLoss(
+            alpha=focal_alpha,
+            gamma=focal_gamma,
+            lobe_threshold=threshold,
+        )
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        dice = self.dice_loss(pred, target)
+        focal = self.focal_loss(pred, target)
+        return self.acl_lambda * dice + (1.0 - self.acl_lambda) * focal

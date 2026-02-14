@@ -46,3 +46,8 @@ target-version = "py311"
 [tool.ruff.lint]
 # Ignore E402 (module level import not at top) for scripts that need sys.path manipulation
 ignore = ["E402"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests (data prep / tuning / training). Require dev data; run with pytest -m e2e.",
+]

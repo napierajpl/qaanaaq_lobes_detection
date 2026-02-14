@@ -16,7 +16,7 @@ from src.utils.path_utils import resolve_path, get_project_root
 
 
 def main():
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = BaseCLIParser(
         description="Filter training tiles based on RGB data quality and target presence",

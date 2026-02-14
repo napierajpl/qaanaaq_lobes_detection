@@ -36,6 +36,7 @@ from src.training.visualization import (
     get_representative_tile_ids_for_viz,
     resolve_representative_tiles,
     create_prediction_tile_figures,
+    show_best_predicted_tile,
 )
 from src.preprocessing.normalization import compute_statistics
 from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics
@@ -233,6 +234,7 @@ def train_model_with_config(
         run_name = f"unet_baseline_{mode}"
 
     with mlflow.start_run(run_name=run_name):
+        loss_plot_path = None  # set when file: tracking so we can write loss.png each epoch
 
         # Print run location at start so you can follow plots during training
         active = mlflow.active_run()
@@ -246,8 +248,10 @@ def train_model_with_config(
             )
             if tracking_uri.startswith("file:"):
                 base = tracking_uri.replace("file:", "").rstrip("/")
-                plots_dir = f"{base}/{exp_id}/{run_id}/artifacts/plots"
-                print(f"  Plots (updated each epoch): {plots_dir}/loss.png", flush=True)
+                plots_dir = Path(base) / str(exp_id) / run_id / "artifacts" / "plots"
+                loss_plot_path = plots_dir / "loss.png"
+                plots_dir.mkdir(parents=True, exist_ok=True)
+                print(f"  Plots (updated each epoch): {loss_plot_path}", flush=True)
             print(f"  tracking_uri={tracking_uri}", flush=True)
 
         # Log config
@@ -341,6 +345,8 @@ def train_model_with_config(
         best_val_loss = float("inf")
         best_model_path = models_dir / "best_model.pt"
         iou_threshold = config["training"].get("iou_threshold", 5.0)
+        best_tile_loss_so_far = float("inf")
+        best_tile_info_so_far = None
 
         # Track metrics across epochs for visualization
         metrics_history = {
@@ -356,17 +362,16 @@ def train_model_with_config(
         logger.info("=== Starting Training ===")
         logger.info(f"IoU threshold: {iou_threshold}")
 
-        # Create initial placeholder plots so the printed path exists before first epoch
-        if trial is None:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.set_xlabel("Epoch")
-            ax.set_ylabel("Loss")
-            ax.set_title("Training started – plot will update after each epoch.")
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            plt.tight_layout()
-            mlflow.log_figure(fig, "plots/loss.png")
-            plt.close(fig)
+        # Create initial placeholder so the printed path exists before first epoch (training and Optuna trials)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.set_title("Training started – plot will update after each epoch.")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        plt.tight_layout()
+        mlflow.log_figure(fig, "plots/loss.png")
+        plt.close(fig)
 
         # Encoder unfreezing configuration
         encoder_config = config["model"].get("encoder", {})
@@ -394,10 +399,11 @@ def train_model_with_config(
             )
 
             # Validate
-            val_metrics = validate(
+            val_metrics, best_tile_result = validate(
                 model, val_loader, criterion, device, epoch,
                 iou_threshold=iou_threshold,
-                val_tile_list=val_tiles
+                val_tile_list=val_tiles,
+                return_best_tile=(trial is None),
             )
 
             # Track metrics
@@ -488,6 +494,33 @@ def train_model_with_config(
                     flush=True,
                 )
 
+            if trial is None and best_tile_result is not None:
+                tile_info, tile_loss = best_tile_result
+                if tile_loss < best_tile_loss_so_far:
+                    best_tile_loss_so_far = tile_loss
+                    best_tile_info_so_far = tile_info
+                    fig = show_best_predicted_tile(
+                        model,
+                        best_tile_info_so_far,
+                        features_dir,
+                        targets_dir,
+                        normalization_stats,
+                        device,
+                        tile_size,
+                        iou_threshold,
+                        best_tile_loss_so_far,
+                    )
+                    mlflow.log_figure(fig, "plots/best_predicted_tile.png")
+                    if loss_plot_path is not None:
+                        best_tile_plot_path = loss_plot_path.parent / "best_predicted_tile.png"
+                        fig.savefig(best_tile_plot_path, dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+                    logger.info(
+                        "Updated best predicted tile: %s loss=%.6f",
+                        best_tile_info_so_far.get("tile_id", "?"),
+                        best_tile_loss_so_far,
+                    )
+
             # One-line epoch summary (helps spot early-stop / baseline progress)
             summary = (
                 f"[EPOCH] {epoch}/{config['training']['num_epochs']} "
@@ -509,12 +542,18 @@ def train_model_with_config(
                 )
             print(summary, flush=True)
 
-            # Update training plots in MLflow after each epoch (non-Optuna only) so you can follow the printed path
+            # Update training plots in MLflow after each epoch; also write loss.png to disk so the printed path updates live
+            figures = create_training_plots(metrics_history, baseline_mae)
+            if "loss" in figures:
+                mlflow.log_figure(figures["loss"], "plots/loss.png")
+                if loss_plot_path is not None:
+                    figures["loss"].savefig(loss_plot_path, dpi=150, bbox_inches="tight")
             if trial is None:
-                figures = create_training_plots(metrics_history, baseline_mae)
                 for plot_name, fig in figures.items():
-                    mlflow.log_figure(fig, f"plots/{plot_name}.png")
-                    plt.close(fig)
+                    if plot_name != "loss":
+                        mlflow.log_figure(fig, f"plots/{plot_name}.png")
+            for fig in figures.values():
+                plt.close(fig)
 
         # Log final metrics to MLflow
         mlflow.log_metric("best_val_loss", best_val_loss)
@@ -567,29 +606,35 @@ def train_model_with_config(
 
             viz_config = config.get("visualization", {})
             rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, mode, tile_size)
-            if rep_tile_ids:
-                rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids)
-                if rep_tiles:
-                    logger.info("=== Creating prediction tile visualizations ===")
-                    pred_figures = create_prediction_tile_figures(
-                        model,
-                        rep_tiles,
-                        features_dir,
-                        targets_dir,
-                        normalization_stats,
-                        device,
-                        iou_threshold=iou_threshold,
-                        tile_size=tile_size,
-                    )
-                    for tid, fig in pred_figures.items():
-                        mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
-                        plt.close(fig)
-                        logger.info(f"Logged prediction tile: {tid}")
-                else:
-                    logger.warning(
-                        "representative_tile_ids configured but no matching tiles found; "
-                        "check tile IDs match filtered_tiles.json"
-                    )
+            rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids) if rep_tile_ids else []
+            fallback_n = int(viz_config.get("prediction_tiles_fallback_n", 0))
+            if not rep_tiles and fallback_n > 0 and all_tiles:
+                rep_tiles = all_tiles[:fallback_n]
+                logger.info(
+                    "Using first %d tiles for prediction viz (configured IDs did not match or none set)",
+                    len(rep_tiles),
+                )
+            if rep_tiles:
+                logger.info("=== Creating prediction tile visualizations ===")
+                pred_figures = create_prediction_tile_figures(
+                    model,
+                    rep_tiles,
+                    features_dir,
+                    targets_dir,
+                    normalization_stats,
+                    device,
+                    iou_threshold=iou_threshold,
+                    tile_size=tile_size,
+                )
+                for tid, fig in pred_figures.items():
+                    mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
+                    plt.close(fig)
+                    logger.info(f"Logged prediction tile: {tid}")
+            elif rep_tile_ids:
+                logger.warning(
+                    "representative_tile_ids configured but no matching tiles found and fallback_n=0; "
+                    "check tile IDs match filtered_tiles.json or set prediction_tiles_fallback_n > 0"
+                )
 
         # Save model to MLflow (skip for Optuna trials to save time)
         if mlflow_config.get("log_model", True) and trial is None:

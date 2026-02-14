@@ -13,7 +13,7 @@ from src.utils.path_utils import get_project_root, resolve_path
 
 def main():
     """Create overlapping tiles from raster."""
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = BaseCLIParser(
         description="Create overlapping tiles from raster images for CNN training",

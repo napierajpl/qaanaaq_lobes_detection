@@ -386,12 +386,20 @@ class TileFilter:
             output_file = Path(output_file)
             output_file.parent.mkdir(parents=True, exist_ok=True)
 
+            tile_size = None
+            if valid_tiles:
+                first_feature = features_dir / valid_tiles[0]["features_path"]
+                if first_feature.exists():
+                    with rasterio.open(first_feature) as src:
+                        tile_size = src.height if src.height == src.width else None
+
             output_data = {
                 "filter_config": {
                     "min_rgb_coverage": self.min_rgb_coverage,
                     "include_background_only": self.include_background_only,
                     "min_target_coverage": self.min_target_coverage,
                 },
+                "tile_size": tile_size,
                 "stats": stats_summary,
                 "tiles": valid_tiles,
             }

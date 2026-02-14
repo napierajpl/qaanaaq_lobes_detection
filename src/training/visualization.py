@@ -53,6 +53,16 @@ def _calculate_smart_ylim(
     return float(y_min), float(y_max)
 
 
+def _xlim_epochs(epochs: List[int]) -> Tuple[float, float]:
+    """X limits for epoch axis; avoid singular when len(epochs)==1."""
+    if not epochs:
+        return 0.0, 1.0
+    lo, hi = min(epochs), max(epochs)
+    if lo == hi:
+        return float(lo) - 0.5, float(hi) + 0.5
+    return float(lo), float(hi)
+
+
 def plot_mae_comparison(
     epochs: List[int],
     model_mae: List[float],
@@ -93,7 +103,8 @@ def plot_mae_comparison(
     ax.set_title('Model MAE vs Baseline MAE', fontsize=14, fontweight='bold')
     ax.legend(loc='best', fontsize=10)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(left=min(epochs), right=max(epochs))
+    x_lo, x_hi = _xlim_epochs(epochs)
+    ax.set_xlim(left=x_lo, right=x_hi)
 
     plt.tight_layout()
 
@@ -136,7 +147,8 @@ def plot_loss(
     ax.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
     ax.legend(loc='best', fontsize=10)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(left=min(epochs), right=max(epochs))
+    x_lo, x_hi = _xlim_epochs(epochs)
+    ax.set_xlim(left=x_lo, right=x_hi)
 
     plt.tight_layout()
 
@@ -179,7 +191,8 @@ def plot_iou(
     ax.set_title('Validation IoU', fontsize=14, fontweight='bold')
     ax.legend(loc='best', fontsize=10)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(left=min(epochs), right=max(epochs))
+    x_lo, x_hi = _xlim_epochs(epochs)
+    ax.set_xlim(left=x_lo, right=x_hi)
 
     plt.tight_layout()
 
@@ -336,6 +349,69 @@ def _load_rgb_for_display(features_path: Path, features_base_dir: Path) -> np.nd
     rgb = np.transpose(rgb, (1, 2, 0))
     rgb = np.clip(rgb / 255.0, 0, 1)
     return rgb
+
+
+def show_best_predicted_tile(
+    model: torch.nn.Module,
+    tile_info: dict,
+    features_dir: Path,
+    targets_dir: Path,
+    normalization_stats: dict,
+    device: torch.device,
+    tile_size: int,
+    iou_threshold: float,
+    loss_value: float,
+) -> plt.Figure:
+    from src.training.dataloader import TileDataset
+    from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
+
+    rep_tiles = [tile_info]
+    first_path = Path(features_dir) / tile_info.get("features_path", "").replace("\\", "/")
+    if first_path.exists():
+        with rasterio.open(first_path) as src:
+            h, w = src.height, src.width
+            if h == w:
+                tile_size = int(h)
+    model.eval()
+    dataset = TileDataset(
+        rep_tiles,
+        Path(features_dir),
+        Path(targets_dir),
+        normalization_stats,
+        tile_size=tile_size,
+    )
+    features, target = dataset[0]
+    features_batch = features.unsqueeze(0).to(device)
+    with torch.no_grad():
+        pred = model(features_batch)
+    pred_cpu = pred.squeeze(0).cpu()
+    target_cpu = target.unsqueeze(0)
+    pred_np = np.squeeze(pred_cpu.numpy())
+    target_np = target.squeeze().numpy()
+    mae = compute_mae(pred_cpu, target_cpu)
+    rmse = compute_rmse(pred_cpu, target_cpu)
+    iou = compute_iou(pred_cpu, target_cpu, threshold=iou_threshold)
+    fp = tile_info.get("features_path", "")
+    rgb = _load_rgb_for_display(Path(fp.replace("\\", "/")), Path(features_dir))
+    tid = tile_info.get("tile_id", "tile_0")
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(rgb)
+    axes[0].set_title("RGB")
+    axes[0].axis("off")
+    vmin, vmax = 0.0, 20.0
+    axes[1].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
+    axes[1].set_title("Proximity (target)")
+    axes[1].axis("off")
+    axes[2].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
+    axes[2].set_title("Prediction")
+    axes[2].axis("off")
+    title = (
+        f"Best predicted tile: {tid}  |  loss: {loss_value:.6f}  "
+        f"MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}"
+    )
+    fig.suptitle(title, fontsize=10)
+    plt.tight_layout()
+    return fig
 
 
 def create_prediction_tile_figures(

@@ -1,4 +1,4 @@
-best_validation_loss: 3.4380458641052245
+best_validation_loss: 367.8871154785156
 best_trial_number: 0
 hyperparameters:
   learning_rate: 0.0013292918943162175

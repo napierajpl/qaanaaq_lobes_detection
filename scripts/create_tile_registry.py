@@ -21,7 +21,7 @@ def main():
     """Create tile registry from filtered tiles."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(description="Create tile registry from filtered_tiles.json")
     parser.add_argument(
@@ -66,6 +66,19 @@ def main():
         default=0.15,
         help="Test split fraction",
     )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        choices=[256, 512],
+        default=256,
+        help="Tile size in pixels (must match the tiling used to create tiles). Default: 256.",
+    )
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=0.3,
+        help="Overlap ratio used when creating tiles (default: 0.3).",
+    )
 
     args = parser.parse_args()
 
@@ -100,6 +113,8 @@ def main():
         train_split=args.train_split,
         val_split=args.val_split,
         test_split=args.test_split,
+        tile_size=args.tile_size,
+        overlap=args.overlap,
     )
 
     logger.info(f"Tile registry created successfully: {registry_path}")

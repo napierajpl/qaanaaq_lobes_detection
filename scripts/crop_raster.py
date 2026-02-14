@@ -13,7 +13,7 @@ from src.utils.path_utils import get_project_root, resolve_path
 
 def main():
     """Crop raster from specified coordinates."""
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = BaseCLIParser(
         description="Crop raster image from specified coordinates and dimensions",

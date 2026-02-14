@@ -40,13 +40,13 @@ class TileRegistry:
         else:
             self._initialize_empty()
 
-    def _initialize_empty(self) -> None:
+    def _initialize_empty(self, tile_size: int = 256, overlap: float = 0.3) -> None:
         """Initialize empty registry structure."""
         self.registry = {
             "metadata": {
                 "source_raster": str(self.source_raster_path) if self.source_raster_path else None,
-                "tile_size": 256,
-                "overlap": 0.3,
+                "tile_size": tile_size,
+                "overlap": overlap,
                 "crs": None,
                 "created": datetime.now().isoformat(),
                 "last_updated": datetime.now().isoformat(),
@@ -77,6 +77,8 @@ class TileRegistry:
         val_split: float = 0.15,
         test_split: float = 0.15,
         random_seed: int = 42,
+        tile_size: int = 256,
+        overlap: float = 0.3,
     ) -> None:
         """
         Migrate data from filtered_tiles.json to registry format.
@@ -119,14 +121,14 @@ class TileRegistry:
             transform = src.transform
 
             # Calculate tile grid
-            tiler = Tiler(tile_size=256, overlap=0.3)
+            tiler = Tiler(tile_size=tile_size, overlap=overlap)
             tile_grid = tiler.calculate_tile_grid(src.width, src.height)
 
             # Update metadata
             self.registry["metadata"]["source_raster"] = str(source_raster_path)
             self.registry["metadata"]["crs"] = crs
-            self.registry["metadata"]["tile_size"] = 256
-            self.registry["metadata"]["overlap"] = 0.3
+            self.registry["metadata"]["tile_size"] = tile_size
+            self.registry["metadata"]["overlap"] = overlap
 
             # Process each tile
             valid_tile_ids = {tile["tile_id"] for tile in all_tiles}

@@ -22,14 +22,24 @@ def main():
     """Generate shapefile from tile registry."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
-    parser = argparse.ArgumentParser(description="Generate shapefile from tile registry")
+    parser = argparse.ArgumentParser(
+        description="Generate shapefile from tile registry for QGIS. "
+        "Use --tile-size 512 for 512x512 tiles (registry must exist in train_512/)."
+    )
     parser.add_argument(
         "--registry",
         type=Path,
-        default=project_root / "data/processed/tiles/train/tile_registry.json",
-        help="Path to tile_registry.json",
+        default=None,
+        help="Path to tile_registry.json (default: from --tile-size; train/ or train_512/)",
+    )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        choices=[256, 512],
+        default=256,
+        help="Tile size: 256 or 512. Sets default registry/output to train/ or train_512/ (default: 256)",
     )
     parser.add_argument(
         "--output",
@@ -45,8 +55,11 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve paths
-    registry_path = resolve_path(args.registry, project_root)
+    if args.registry is not None:
+        registry_path = resolve_path(args.registry, project_root)
+    else:
+        subdir = "train_512" if args.tile_size == 512 else "train"
+        registry_path = project_root / "data/processed/tiles" / subdir / "tile_registry.json"
 
     if args.output:
         output_path = resolve_path(args.output, project_root)

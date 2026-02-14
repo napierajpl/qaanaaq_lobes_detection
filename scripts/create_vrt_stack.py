@@ -13,7 +13,7 @@ from src.utils.path_utils import get_project_root, resolve_path
 
 def main():
     """Create VRT stack from multiple rasters."""
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = BaseCLIParser(
         description="Create virtual raster (VRT) stack from multiple raster files",

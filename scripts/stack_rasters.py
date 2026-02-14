@@ -13,7 +13,7 @@ from src.utils.path_utils import get_project_root, resolve_path
 
 def main():
     """Stack multiple rasters into a single file."""
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = BaseCLIParser(
         description="Stack multiple raster files into a single multi-band raster",

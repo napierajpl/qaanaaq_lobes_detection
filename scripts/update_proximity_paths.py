@@ -19,7 +19,7 @@ def update_proximity_paths(filtered_tiles_path: Path, old_pattern: str, new_patt
         old_pattern: Old path pattern to replace (e.g., "proximity10px")
         new_pattern: New path pattern (e.g., "proximity20px")
     """
-    with open(filtered_tiles_path, 'r') as f:
+    with open(filtered_tiles_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     updated_count = 0
@@ -32,7 +32,7 @@ def update_proximity_paths(filtered_tiles_path: Path, old_pattern: str, new_patt
                 updated_count += 1
 
     # Save updated JSON
-    with open(filtered_tiles_path, 'w') as f:
+    with open(filtered_tiles_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
     print(f"Updated {updated_count} tile paths from '{old_pattern}' to '{new_pattern}'")
@@ -43,7 +43,7 @@ def main():
     """Update proximity paths in filtered tiles."""
     import argparse
 
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     parser = argparse.ArgumentParser(
         description="Update proximity map paths in filtered_tiles.json"

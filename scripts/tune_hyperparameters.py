@@ -30,6 +30,7 @@ from src.tuning.optuna_csv import (
 from src.tuning.optuna_session_metadata import current_session_metadata
 from src.tuning.optuna_prompts import prompt_seed_choice_single_file
 from src.tuning.optuna_best_params import save_best_params
+from src.tuning.optuna_plots import update_progress_plot
 from scripts.train_model import train_model_with_config
 
 logging.basicConfig(
@@ -237,9 +238,25 @@ def main():
         results_dir = args.results_csv.parent
         results_csv = args.results_csv
 
-    # Always print where we read/write tuning results
+    # Progress plot (updated after each trial); optional per-epoch plot when MLflow tracking is file
+    progress_plot_path = results_dir / f"{args.study_name}_progress.png"
+    tracking_uri = base_config.get("mlflow", {}).get("tracking_uri", "file:./mlruns")
+    if tracking_uri.startswith("file:"):
+        base = tracking_uri.replace("file:", "").rstrip("/")
+        if not Path(base).is_absolute():
+            tracking_uri = f"file:{str(project_root / base)}"
+    update_progress_plot(study, progress_plot_path, tracking_uri=tracking_uri)
     print(
         f"[RESULTS] csv_path={results_csv}",
+        flush=True,
+    )
+    print(
+        f"[PROGRESS] plot_path={progress_plot_path}",
+        flush=True,
+    )
+    epochs_plot_path = results_dir / f"{args.study_name}_progress_epochs.png"
+    print(
+        f"[PROGRESS] epochs_plot_path={epochs_plot_path} (updated after each trial, all epochs)",
         flush=True,
     )
 
@@ -374,10 +391,14 @@ def main():
     logger.info("Starting hyperparameter optimization...")
     logger.info("")
 
+    def _progress_callback(study: optuna.Study, trial: optuna.Trial) -> None:
+        update_progress_plot(study, progress_plot_path, tracking_uri=tracking_uri)
+
     study.optimize(
         lambda trial: objective(trial, base_config, mode),
         n_trials=args.n_trials,
         show_progress_bar=True,
+        callbacks=[_progress_callback],
     )
 
     # Append this session's trials to the single history CSV

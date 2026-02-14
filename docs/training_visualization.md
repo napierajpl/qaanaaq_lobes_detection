@@ -56,6 +56,15 @@ This shows:
 - **Delta**: Absolute difference (baseline - model)
 - **Percent**: Relative improvement (-2.52% means model is 2.52% worse)
 
+## Prediction Tile Visualization
+
+After each training run (non-Optuna), the best model is used to generate prediction visualizations for a configurable list of tiles. Each figure shows **RGB**, **Proximity (target)**, and **Prediction** side by side. Config: `configs/training_config.yaml` → `visualization.representative_tile_ids` (production) and optionally `representative_tile_ids_dev` (when using `--dev`). Artifacts are logged under `prediction_tiles/<tile_id>.png`.
+
+### Dev vs production tile IDs
+
+- **Dev mode** (`--dev`): Uses a 1024×1024 cropped area. Tiling (256×256, 30% overlap) produces **36 tiles** in a 6×6 grid. Tile IDs in `filtered_tiles.json` are `tile_0000` … `tile_0035`; the numeric index is **0–35**. Use `representative_tile_ids_dev: [0, 1, 2, 3, 4]` (or any subset of 0–35) to get prediction figures in dev runs.
+- **Production**: Full AOI; tile count and IDs depend on your tiling. Use integer indices (e.g. `19189`) or full `tile_id` strings (e.g. `features_tile_19189`) in `representative_tile_ids`.
+
 ## Implementation
 
 Visualization code is in `src/training/visualization.py` to keep the project organized. Charts are created after training completes and logged to MLflow automatically.

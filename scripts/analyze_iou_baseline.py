@@ -32,7 +32,7 @@ def analyze_random_baseline_iou(
     """
     import json
 
-    with open(filtered_tiles_path, 'r') as f:
+    with open(filtered_tiles_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     tiles = data.get("tiles", [])
@@ -102,7 +102,7 @@ def analyze_random_baseline_iou(
 
 def compare_proximity_zones():
     """Compare random baseline IoU for 10px vs 20px proximity zones."""
-    project_root = get_project_root(__file__)
+    project_root = get_project_root(Path(__file__))
 
     # We need to check if we have 10px tiles available
     # For now, let's analyze 20px and calculate what 10px would be theoretically

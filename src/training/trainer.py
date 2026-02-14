@@ -3,7 +3,7 @@ Training utilities.
 """
 
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 
 import numpy as np
 import torch
@@ -102,7 +102,8 @@ def validate(
     epoch: int,
     iou_threshold: float = 5.0,
     val_tile_list: Optional[List[dict]] = None,
-) -> Dict[str, float]:
+    return_best_tile: bool = False,
+) -> Tuple[Dict[str, float], Optional[Tuple[dict, float]]]:
     """
     Validate model.
 
@@ -114,9 +115,10 @@ def validate(
         epoch: Current epoch number
         iou_threshold: Threshold for IoU calculation
         val_tile_list: Optional list of validation tile info (for baseline comparison)
+        return_best_tile: If True and val_tile_list provided, return (tile_info, loss) for tile with lowest loss
 
     Returns:
-        Dictionary of validation metrics
+        (metrics_dict, best_tile_result). best_tile_result is (tile_info, loss) or None.
     """
     model.eval()
 
@@ -125,6 +127,9 @@ def validate(
     total_rmse = 0.0
     total_iou = 0.0
     num_batches = 0
+
+    best_tile_result: Optional[Tuple[dict, float]] = None
+    tile_index = 0
 
     # For baseline comparison - compute aggregate baseline MAE from tile list
     baseline_mae_sum = 0.0
@@ -160,6 +165,19 @@ def validate(
             mae = compute_mae(outputs, targets)
             rmse = compute_rmse(outputs, targets)
             iou = compute_iou(outputs, targets, threshold=iou_threshold)
+
+            # Per-sample loss for best-tile tracking (same criterion as training)
+            if return_best_tile and val_tile_list is not None:
+                batch_size = outputs.size(0)
+                for i in range(batch_size):
+                    if tile_index >= len(val_tile_list):
+                        break
+                    sample_loss = criterion(
+                        outputs[i : i + 1], targets[i : i + 1]
+                    ).item()
+                    if best_tile_result is None or sample_loss < best_tile_result[1]:
+                        best_tile_result = (val_tile_list[tile_index].copy(), sample_loss)
+                    tile_index += 1
 
             # Collect statistics for diagnostics
             all_pred_values.append(outputs.cpu().numpy().flatten())
@@ -221,7 +239,7 @@ def validate(
         metrics["val_improvement_over_baseline"] = improvement
         metrics["val_better_than_baseline"] = float(is_better)  # 1.0 if better, 0.0 if not
 
-    return metrics
+    return (metrics, best_tile_result)
 
 
 def save_checkpoint(
