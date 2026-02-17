@@ -140,3 +140,11 @@ paths:
     features_dir: "data/processed/tiles/train_512/features"
     targets_dir: "data/processed/tiles/train_512/targets"
     models_dir: "data/models/production"
+
+  # Synthetic parenthesis (sanity-check, 512x512 only): separate from dev/production. Generate with:
+  #   poetry run python scripts/generate_synthetic_parenthesis_dataset.py
+  synthetic_parenthesis_512:
+    filtered_tiles: "data/processed/tiles/synthetic_parenthesis_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/synthetic_parenthesis_512/features"
+    targets_dir: "data/processed/tiles/synthetic_parenthesis_512/targets"
+    models_dir: "data/models/synthetic_parenthesis"

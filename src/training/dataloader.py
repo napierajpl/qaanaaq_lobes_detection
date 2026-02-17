@@ -3,19 +3,194 @@ Data loading utilities for training.
 """
 
 import json
+import random
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Set
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 import rasterio
+from torchvision.transforms.functional import adjust_contrast, adjust_saturation
 
 from src.preprocessing.normalization import (
     normalize_rgb,
     standardize_dem,
     standardize_slope,
 )
+
+
+def get_all_tile_ids_from_dirs(
+    features_dir: Path,
+    targets_dir: Path,
+) -> Set[str]:
+    """Return set of tile_id that have both a feature file and a target file."""
+    features_dir = Path(features_dir)
+    targets_dir = Path(targets_dir)
+    feature_stems = {f.stem for f in features_dir.glob("**/tile_*.tif")}
+    target_stems = {f.stem for f in targets_dir.glob("**/tile_*.tif")}
+    return feature_stems & target_stems
+
+
+def _resolve_tile_path(base_dir: Path, tile_id: str) -> Optional[Path]:
+    """Return path to tile_id.tif under base_dir (flat or nested)."""
+    direct = base_dir / f"{tile_id}.tif"
+    if direct.exists():
+        return direct
+    found = list(base_dir.glob(f"**/{tile_id}.tif"))
+    return found[0] if found else None
+
+
+def is_tile_rgb_all_white(
+    features_path: Path,
+    white_threshold: float = 0.95,
+) -> bool:
+    """
+    Return True if at least white_threshold fraction of RGB pixels are white (all bands >= 250).
+    """
+    with rasterio.open(features_path) as src:
+        if src.count < 3:
+            return True
+        rgb = src.read([1, 2, 3])
+    rgb = np.transpose(rgb, (1, 2, 0))
+    white = np.all(rgb >= 250, axis=-1)
+    return float(np.mean(white)) >= white_threshold
+
+
+def get_background_candidates(
+    features_dir: Path,
+    targets_dir: Path,
+    valid_tile_ids: Set[str],
+    white_threshold: float = 0.95,
+    show_progress: bool = True,
+) -> List[dict]:
+    """
+    Return list of tile dicts (tile_id, features_path, targets_path) for excluded tiles
+    that are not all-white (suitable as background tiles).
+    """
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+    features_dir = Path(features_dir)
+    targets_dir = Path(targets_dir)
+    all_ids = get_all_tile_ids_from_dirs(features_dir, targets_dir)
+    excluded_ids = all_ids - valid_tile_ids
+    n_excluded = len(excluded_ids)
+    candidates = []
+    it = sorted(excluded_ids)
+    if show_progress and n_excluded:
+        import sys
+        print(f"  Checking {n_excluded} excluded tiles (open each to test non-white)...", flush=True)
+    if show_progress and tqdm is not None:
+        it = tqdm(it, desc="Scanning background candidates", unit="tile", total=n_excluded)
+    for tile_id in it:
+        feat_path = _resolve_tile_path(features_dir, tile_id)
+        tgt_path = _resolve_tile_path(targets_dir, tile_id)
+        if feat_path is None or tgt_path is None:
+            continue
+        if is_tile_rgb_all_white(feat_path, white_threshold):
+            continue
+        try:
+            features_rel = str(feat_path.relative_to(features_dir))
+            targets_rel = str(tgt_path.relative_to(targets_dir))
+        except ValueError:
+            features_rel = str(feat_path)
+            targets_rel = str(tgt_path)
+        candidates.append({
+            "tile_id": tile_id,
+            "features_path": features_rel,
+            "targets_path": targets_rel,
+        })
+    return candidates
+
+
+def build_extended_train_tiles(
+    train_tiles: List[dict],
+    background_candidates: List[dict],
+    n_add: Optional[int] = None,
+    random_seed: int = 42,
+) -> List[dict]:
+    """
+    Build extended train list: train_tiles + n_add background + n_add augmented-lobe entries.
+    n_add defaults to min(len(train_tiles), len(background_candidates)).
+    Augmented entries have "augment": True and point to a lobe tile.
+    Each entry gets "role": "lobe" | "background" | "augmented_lobe" for persistence.
+    """
+    rng = random.Random(random_seed)
+    n_add = n_add or min(len(train_tiles), len(background_candidates))
+    n_add = min(n_add, len(background_candidates))
+    if n_add == 0:
+        for t in train_tiles:
+            t.setdefault("role", "lobe")
+        return train_tiles
+
+    for t in train_tiles:
+        t.setdefault("role", "lobe")
+    background_sample = [dict(t) for t in rng.sample(background_candidates, n_add)]
+    for t in background_sample:
+        t["role"] = "background"
+    lobe_sample = rng.choices(train_tiles, k=n_add)
+    augmented_entries = []
+    for t in lobe_sample:
+        entry = dict(t)
+        entry["augment"] = True
+        entry["role"] = "augmented_lobe"
+        augmented_entries.append(entry)
+
+    return train_tiles + background_sample + augmented_entries
+
+
+def save_extended_training_tiles(
+    output_path: Path,
+    train_tiles: List[dict],
+    config: Optional[dict] = None,
+    stats: Optional[dict] = None,
+) -> None:
+    """Save extended training tile list (with role) to JSON for reuse and shapefile train_usage."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "config": config or {},
+        "stats": stats or {},
+        "tiles": train_tiles,
+    }
+    with open(output_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    return None
+
+
+def load_extended_training_tiles(path: Path) -> tuple:
+    """Load extended_training_tiles.json; return (tiles, config, stats)."""
+    path = Path(path)
+    with open(path) as f:
+        data = json.load(f)
+    return data.get("tiles", []), data.get("config", {}), data.get("stats", {})
+
+
+def get_background_train_ids_from_extended_tiles(tiles: List[dict]) -> Set[str]:
+    """Return set of tile_id where role == 'background'."""
+    return {t["tile_id"] for t in tiles if t.get("role") == "background"}
+
+
+def _apply_lobe_augmentation(
+    features: torch.Tensor,
+    target: torch.Tensor,
+    contrast_range: Tuple[float, float] = (0.8, 1.2),
+    saturation_range: Tuple[float, float] = (0.8, 1.2),
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply random rotation (0/90/180/270) and random contrast/saturation to RGB only."""
+    k = random.randint(0, 3)
+    features = torch.rot90(features, k, dims=[1, 2])
+    target = torch.rot90(target, k, dims=[1, 2])
+    c = random.uniform(*contrast_range)
+    s = random.uniform(*saturation_range)
+    rgb = features[0:3].clone()
+    rgb = adjust_contrast(rgb, c)
+    rgb = adjust_saturation(rgb, s)
+    features = features.clone()
+    features[0:3] = rgb
+    return features, target
 
 
 class TileDataset(Dataset):
@@ -28,12 +203,14 @@ class TileDataset(Dataset):
         targets_base_dir: Path,
         normalization_stats: Optional[dict] = None,
         tile_size: int = 256,
+        augmentation_config: Optional[dict] = None,
     ):
         self.tile_list = tile_list
         self.features_base_dir = Path(features_base_dir)
         self.targets_base_dir = Path(targets_base_dir)
         self.normalization_stats = normalization_stats or {}
         self.tile_size = tile_size
+        self.augmentation_config = augmentation_config or {}
 
     def __len__(self) -> int:
         return len(self.tile_list)
@@ -89,22 +266,50 @@ class TileDataset(Dataset):
 
         # Convert to tensors
         features_tensor = torch.from_numpy(features).float()
-        target_tensor = torch.from_numpy(target).float().unsqueeze(0)  # Add channel dimension
+        target_tensor = torch.from_numpy(target).float().unsqueeze(0)
+
+        if tile_info.get("augment"):
+            features_tensor, target_tensor = _apply_lobe_augmentation(
+                features_tensor,
+                target_tensor,
+                contrast_range=tuple(self.augmentation_config.get("contrast_range", (0.8, 1.2))),
+                saturation_range=tuple(self.augmentation_config.get("saturation_range", (0.8, 1.2))),
+            )
 
         return features_tensor, target_tensor
 
 
-def load_filtered_tiles(filtered_tiles_path: Path) -> List[dict]:
+def load_filtered_tiles(filtered_tiles_path: Path, show_progress: bool = False) -> List[dict]:
     """
     Load filtered tile list from JSON.
 
     Args:
         filtered_tiles_path: Path to filtered_tiles.json
+        show_progress: If True, show a progress bar while reading the file (chunked read).
 
     Returns:
         List of tile dictionaries
     """
-    with open(filtered_tiles_path) as f:
+    path = Path(filtered_tiles_path)
+    if show_progress and path.exists():
+        try:
+            from tqdm import tqdm
+            size = path.stat().st_size
+            chunk_size = 512 * 1024
+            chunks = []
+            with open(path, "rb") as f:
+                with tqdm(total=size, desc="Loading JSON", unit="B", unit_scale=True) as pbar:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        pbar.update(len(chunk))
+            data = json.loads(b"".join(chunks).decode("utf-8"))
+            return data["tiles"]
+        except Exception:
+            pass
+    with open(path) as f:
         data = json.load(f)
     return data["tiles"]
 
@@ -163,6 +368,7 @@ def create_dataloaders(
     batch_size: int = 16,
     num_workers: int = 0,
     tile_size: int = 256,
+    augmentation_config: Optional[dict] = None,
 ) -> Tuple[DataLoader, DataLoader]:
     train_dataset = TileDataset(
         train_tiles,
@@ -170,6 +376,7 @@ def create_dataloaders(
         targets_base_dir,
         normalization_stats,
         tile_size=tile_size,
+        augmentation_config=augmentation_config,
     )
 
     val_dataset = TileDataset(

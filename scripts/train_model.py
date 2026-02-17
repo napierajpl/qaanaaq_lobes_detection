@@ -35,6 +35,7 @@ from src.training.dataloader import (
 from src.training.trainer import train_one_epoch, validate, save_checkpoint
 from src.training.visualization import (
     create_training_plots,
+    plot_loss_simple,
     get_representative_tile_ids_for_viz,
     resolve_representative_tiles,
     create_prediction_tile_figures,
@@ -386,6 +387,8 @@ def train_model_with_config(
         best_tile_info_so_far = None
         best_iou_so_far = -1.0
         best_iou_tile_info_so_far = None
+        last_epoch_saved = None
+        SAVE_THROTTLE_EPOCHS = 10
 
         # Track metrics across epochs for visualization
         metrics_history = {
@@ -395,8 +398,35 @@ def train_model_with_config(
             "val_mae": [],
             "val_iou": [],
             "improvement_percent": [],
+            "early_stop_counter": [],
         }
         baseline_mae = None
+        enc = config.get("model", {}).get("encoder", {})
+        tr = config.get("training", {})
+        da = config.get("data", {})
+        loss_plot_config_parts = [
+            f"arch={config.get('model', {}).get('architecture', '?')}",
+            f"drop={config.get('model', {}).get('dropout', '?')}",
+            f"enc={enc.get('name', '?')}",
+            f"pretrain={enc.get('pretrained', '?')}",
+            f"freeze={enc.get('freeze_encoder', '?')}",
+            f"unfreeze_ep={enc.get('unfreeze_after_epoch', '?')}",
+            f"dec_drop={config.get('model', {}).get('decoder_dropout', '?')}",
+            f"batch={tr.get('batch_size', '?')}",
+            f"ep={tr.get('num_epochs', '?')}",
+            f"lr={tr.get('learning_rate', '?')}",
+            f"loss={tr.get('loss_function', '?')}",
+            f"tile={da.get('tile_size', '?')}",
+            f"train_split={da.get('train_split', '?')}",
+        ]
+        loss_plot_options = {
+            "config_summary": " | ".join(loss_plot_config_parts),
+            "num_train_tiles": len(train_tiles),
+            "num_val_tiles": len(val_tiles),
+            "early_stopping_patience": early_stopping_patience,
+            "freeze_encoder": enc.get("freeze_encoder"),
+            "unfreeze_after_epoch": enc.get("unfreeze_after_epoch"),
+        }
 
         logger.info("=== Starting Training ===")
         logger.info(f"IoU threshold: {iou_threshold}")
@@ -517,6 +547,7 @@ def train_model_with_config(
                     early_stopping_counter = 0
                 else:
                     early_stopping_counter += 1
+                metrics_history["early_stop_counter"].append(early_stopping_counter)
 
                 if early_stopping_counter >= early_stopping_patience:
                     logger.info(f"[EARLY STOP] No improvement for {early_stopping_patience} epochs. Stopping training.")
@@ -533,46 +564,14 @@ def train_model_with_config(
             all_metrics = {**train_metrics, **val_metrics}
             log_metrics(all_metrics, step=epoch)
 
-            # Save best model
-            if val_metrics["val_loss"] < best_val_loss:
-                prev_best = best_val_loss
-                best_val_loss = val_metrics["val_loss"]
-                best_val_mae = val_metrics["val_mae"]
-                best_val_iou = val_metrics.get("val_iou", 0.0)
-                save_checkpoint(
-                    model, optimizer, epoch, val_metrics, best_model_path
-                )
-                logger.info(f"New best model saved! val_loss: {best_val_loss:.4f} | "
-                          f"val_mae: {best_val_mae:.4f} | val_iou: {best_val_iou:.4f}")
-                print(
-                    f"[BEST] epoch={epoch} val_loss={best_val_loss:.6f} "
-                    f"(prev_best={prev_best:.6f}) val_mae={best_val_mae:.6f} val_iou={best_val_iou:.6f}",
-                    flush=True,
-                )
-
+            # Track best tile by loss and by IoU (before save so we can draw with up-to-date best when we do save)
             if trial is None and best_tile_result is not None:
                 tile_info, tile_loss = best_tile_result
                 if tile_loss < best_tile_loss_so_far:
                     best_tile_loss_so_far = tile_loss
                     best_tile_info_so_far = tile_info
-                    fig = show_best_predicted_tile(
-                        model,
-                        best_tile_info_so_far,
-                        features_dir,
-                        targets_dir,
-                        normalization_stats,
-                        device,
-                        tile_size,
-                        iou_threshold,
-                        best_tile_loss_so_far,
-                    )
-                    mlflow.log_figure(fig, "plots/best_predicted_tile.png")
-                    if loss_plot_path is not None:
-                        best_tile_plot_path = loss_plot_path.parent / "best_predicted_tile.png"
-                        fig.savefig(best_tile_plot_path, dpi=150, bbox_inches="tight")
-                    plt.close(fig)
                     logger.info(
-                        "Updated lowest-loss tile: %s loss=%.6f",
+                        "New lowest-loss tile: %s loss=%.6f",
                         best_tile_info_so_far.get("tile_id", "?"),
                         best_tile_loss_so_far,
                     )
@@ -581,27 +580,69 @@ def train_model_with_config(
                 if tile_iou > best_iou_so_far:
                     best_iou_so_far = tile_iou
                     best_iou_tile_info_so_far = tile_info
-                    fig = show_highest_iou_tile(
-                        model,
-                        best_iou_tile_info_so_far,
-                        features_dir,
-                        targets_dir,
-                        normalization_stats,
-                        device,
-                        tile_size,
-                        iou_threshold,
-                        best_iou_so_far,
-                    )
-                    mlflow.log_figure(fig, "plots/best_iou_tile.png")
-                    if loss_plot_path is not None:
-                        best_iou_plot_path = loss_plot_path.parent / "best_iou_tile.png"
-                        fig.savefig(best_iou_plot_path, dpi=150, bbox_inches="tight")
-                    plt.close(fig)
                     logger.info(
-                        "Updated highest IoU tile: %s IoU=%.4f",
+                        "New highest IoU tile: %s IoU=%.4f",
                         best_iou_tile_info_so_far.get("tile_id", "?"),
                         best_iou_so_far,
                     )
+
+            # Save best model to disk and redraw best-tile figures only when new best val_loss AND 10+ epochs since last save
+            if val_metrics["val_loss"] < best_val_loss:
+                prev_best = best_val_loss
+                best_val_loss = val_metrics["val_loss"]
+                best_val_mae = val_metrics["val_mae"]
+                best_val_iou = val_metrics.get("val_iou", 0.0)
+                may_save = (
+                    last_epoch_saved is None
+                    or (epoch - last_epoch_saved) >= SAVE_THROTTLE_EPOCHS
+                )
+                if may_save:
+                    save_checkpoint(
+                        model, optimizer, epoch, val_metrics, best_model_path
+                    )
+                    logger.info(f"New best model saved! val_loss: {best_val_loss:.4f} | "
+                              f"val_mae: {best_val_mae:.4f} | val_iou: {best_val_iou:.4f}")
+                    if trial is None and best_tile_info_so_far is not None:
+                        logger.info("Creating best predicted tile figure")
+                        fig = show_best_predicted_tile(
+                            model,
+                            best_tile_info_so_far,
+                            features_dir,
+                            targets_dir,
+                            normalization_stats,
+                            device,
+                            tile_size,
+                            iou_threshold,
+                            best_tile_loss_so_far,
+                        )
+                        mlflow.log_figure(fig, "plots/best_predicted_tile.png")
+                        if loss_plot_path is not None:
+                            fig.savefig(loss_plot_path.parent / "best_predicted_tile.png", dpi=150, bbox_inches="tight")
+                        plt.close(fig)
+                    if trial is None and best_iou_tile_info_so_far is not None:
+                        logger.info("Creating best IoU tile figure")
+                        fig = show_highest_iou_tile(
+                            model,
+                            best_iou_tile_info_so_far,
+                            features_dir,
+                            targets_dir,
+                            normalization_stats,
+                            device,
+                            tile_size,
+                            iou_threshold,
+                            best_iou_so_far,
+                        )
+                        mlflow.log_figure(fig, "plots/best_iou_tile.png")
+                        if loss_plot_path is not None:
+                            fig.savefig(loss_plot_path.parent / "best_iou_tile.png", dpi=150, bbox_inches="tight")
+                        plt.close(fig)
+                    last_epoch_saved = epoch
+                print(
+                    f"[BEST] epoch={epoch} val_loss={best_val_loss:.6f} "
+                    f"(prev_best={prev_best:.6f}) val_mae={best_val_mae:.6f} val_iou={best_val_iou:.6f}"
+                    + (" (saved)" if may_save else " (not saved, throttle)"),
+                    flush=True,
+                )
 
             # One-line epoch summary (helps spot early-stop / baseline progress)
             summary = (
@@ -624,18 +665,18 @@ def train_model_with_config(
                 )
             print(summary, flush=True)
 
-            # Update training plots in MLflow after each epoch; also write loss.png to disk so the printed path updates live
-            figures = create_training_plots(metrics_history, baseline_mae)
-            if "loss" in figures:
-                mlflow.log_figure(figures["loss"], "plots/loss.png")
-                if loss_plot_path is not None:
-                    figures["loss"].savefig(loss_plot_path, dpi=150, bbox_inches="tight")
-            if trial is None:
-                for plot_name, fig in figures.items():
-                    if plot_name != "loss":
-                        mlflow.log_figure(fig, f"plots/{plot_name}.png")
-            for fig in figures.values():
-                plt.close(fig)
+            # Update simple loss plot each epoch (fast); advanced plot is created at end of run
+            if not early_stopping_patience:
+                metrics_history["early_stop_counter"].append(0)
+            loss_fig = plot_loss_simple(
+                metrics_history["epochs"],
+                metrics_history["train_loss"],
+                metrics_history["val_loss"],
+            )
+            mlflow.log_figure(loss_fig, "plots/loss.png")
+            if loss_plot_path is not None:
+                loss_fig.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
+            plt.close(loss_fig)
 
         # Log final metrics to MLflow
         mlflow.log_metric("best_val_loss", best_val_loss)
@@ -680,15 +721,53 @@ def train_model_with_config(
             model.load_state_dict(checkpoint["model_state_dict"])
             logger.info("Loaded best checkpoint for plots and MLflow")
 
-        # Create and log visualization plots (skip for Optuna trials to save time)
+        # Create and log full visualization plots including advanced loss; overwrite loss.png with advanced version
         if trial is None:
             logger.info("=== Creating Training Plots ===")
-            figures = create_training_plots(metrics_history, baseline_mae)
+            figures = create_training_plots(metrics_history, baseline_mae, loss_plot_options=loss_plot_options)
 
             for plot_name, fig in figures.items():
                 mlflow.log_figure(fig, f"plots/{plot_name}.png")
+                if plot_name == "loss" and loss_plot_path is not None:
+                    fig.savefig(loss_plot_path, dpi=150)
                 plt.close(fig)
                 logger.info(f"Logged {plot_name} plot to MLflow")
+
+            # Best-tile figures (deferred from per-epoch to avoid slow "new best" epochs)
+            if best_tile_info_so_far is not None:
+                logger.info("=== Creating best predicted tile figure ===")
+                fig = show_best_predicted_tile(
+                    model,
+                    best_tile_info_so_far,
+                    features_dir,
+                    targets_dir,
+                    normalization_stats,
+                    device,
+                    tile_size,
+                    iou_threshold,
+                    best_tile_loss_so_far,
+                )
+                mlflow.log_figure(fig, "plots/best_predicted_tile.png")
+                if loss_plot_path is not None:
+                    fig.savefig(loss_plot_path.parent / "best_predicted_tile.png", dpi=150, bbox_inches="tight")
+                plt.close(fig)
+            if best_iou_tile_info_so_far is not None:
+                logger.info("=== Creating best IoU tile figure ===")
+                fig = show_highest_iou_tile(
+                    model,
+                    best_iou_tile_info_so_far,
+                    features_dir,
+                    targets_dir,
+                    normalization_stats,
+                    device,
+                    tile_size,
+                    iou_threshold,
+                    best_iou_so_far,
+                )
+                mlflow.log_figure(fig, "plots/best_iou_tile.png")
+                if loss_plot_path is not None:
+                    fig.savefig(loss_plot_path.parent / "best_iou_tile.png", dpi=150, bbox_inches="tight")
+                plt.close(fig)
 
             viz_config = config.get("visualization", {})
             rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, mode, tile_size)

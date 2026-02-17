@@ -1,6 +1,12 @@
 # Qaanaaq Lobes Detection
 
-CNN pipeline for detecting glacial lobes from high-resolution aerial imagery (0.2 m/pixel) using multi-channel input (RGB + DEM + slope) and U-Net-style models. Outputs proximity maps for lobe locations with MLflow experiment tracking.
+CNN pipeline for detecting **solifluction lobes** from high-resolution aerial imagery (0.2 m/pixel) using multi-channel input (RGB + DEM + slope) and U-Net-style models. Outputs proximity maps for lobe locations with MLflow experiment tracking.
+
+**What are solifluction lobes?** Solifluction is the slow downslope flow of water-saturated soil in periglacial regions. Lobes are tongue-shaped or arcuate landforms created by this process; they appear as distinct curved or stepped features on the ground. The data used here comes from **northern Greenland, near the town of Qaanaaq**.
+
+![Solifluction lobes (pink outlines) in the Qaanaaq region, N Greenland — aerial view with contour lines](screenshots/Zrzut%20ekranu%202026-01-23%20173303.png)
+
+*Example from the dataset: barren periglacial terrain with solifluction lobes outlined in pink; contour lines show elevation. Northern Greenland, near Qaanaaq.*
 
 ## Setup
 
@@ -34,7 +40,26 @@ See `pyproject.toml` for full dependencies. Spatial reference: EPSG:3413 (see `c
 
    Output: `data/processed/tiles/train/` (features, targets, `filtered_tiles.json`).
 
-2. **Run training** (uses `configs/training_config.yaml` and full AOI tiles):
+2. **Optional – extended training set** (background tiles + pre-written augmented lobe tiles). Run after step 1 if you want to use `use_background_and_augmentation: true` in config. Options: use `configs/data_preparation_config.yaml` (augmentation and lobes/background ratio) or pass paths explicitly:
+
+   ```bash
+   poetry run python scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml
+   ```
+
+   For 512×512 tiles, set `tile_size: 512` in the config or run with `--tile-size 512` (uses `paths_512`). Default is 256.
+
+   Or without config (default paths for 256):
+
+   ```bash
+   poetry run python scripts/prepare_extended_training_set.py \
+     --filtered-tiles data/processed/tiles/train/filtered_tiles.json \
+     --features-dir data/processed/tiles/train/features \
+     --targets-dir data/processed/tiles/train/targets
+   ```
+
+   Output: `features/augmented/`, `targets/augmented/`, and `extended_training_tiles.json` next to `filtered_tiles.json`. Training then loads this JSON when `use_background_and_augmentation: true`.
+
+3. **Run training** (uses `configs/training_config.yaml` and full AOI tiles):
 
    ```bash
    poetry run python scripts/train_model.py
@@ -48,6 +73,8 @@ See `pyproject.toml` for full dependencies. Spatial reference: EPSG:3413 (see `c
    - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
    - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
    - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
+
+   If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
 
    Runs are logged to MLflow (`./mlruns`). After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
 

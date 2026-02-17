@@ -17,8 +17,8 @@ model:
     name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
     pretrained: true  # Use pretrained weights from SatlasPretrain
     freeze_encoder: true  # Unfreeze so BN stats update; with true + eval(), val preds collapse to 0
-    unfreeze_after_epoch: 5  # 0 = never freeze (encoder trainable from epoch 0)
-  decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
+    unfreeze_after_epoch: 5000  # 0 = never freeze (encoder trainable from epoch 0)
+  decoder_dropout: 0.4  # Dropout in decoder only (encoder has no dropout) (originally 0.2)
   # Optional SE + PPM (Gully-ERFNet style). Ablation: set use_se/use_ppm true/false as needed.
   use_se: true
   use_ppm: true
@@ -31,9 +31,9 @@ model:
   # sigmoid_temperature: 0.3  # for sigmoid_steep only; smaller = steeper
 
 training:
-  batch_size: 16
+  batch_size: 24
   num_epochs: 2000  # Increased from 50 - U-Net typically needs 100+ epochs
-  learning_rate: 0.000005  # 5e-6; lower than 1e-5 to avoid big steps when encoder unfrozen (reduces val spike/fluctuation)
+  learning_rate: 0.000001  # 5e-6; lower than 1e-5 to avoid big steps when encoder unfrozen (reduces val spike/fluctuation)
   optimizer: "Adam"
   # Loss function options:
   #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
@@ -46,7 +46,7 @@ training:
   #   - "combined": IoU + Weighted Smooth L1; best val loss in tuning, more stable (diary: combined preferred).
   #   - "acl": Adaptive Correction Loss (Gully-ERFNet): λ·Dice + (1−λ)·Focal; linear structures, imbalance.
   #   See docs/loss_functions.md for full descriptions and config params.
-  loss_function: "acl"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
+  loss_function: "soft_iou"  
   weight_decay: 0.001  # Increased from 0.0001 to reduce overfitting
   # Weighted loss parameters (for weighted_smooth_l1 and combined)
   lobe_weight: 5.0  # Weight for lobe pixels (value >= threshold) - not used with encouragement
@@ -69,13 +69,7 @@ training:
   #   - IoU = intersection / union of these binary masks
   #   - If model predicts all values < 1.0, IoU will be 0 (no overlap)
   #   - Note: Proximity zone expanded to 20px (Jan 22, 2026) for better class balance
-  iou_threshold: 1.0  # Pixels with value >= this are considered lobes (lower = easier task)
-  # Learning rate scheduler (min_lr must be < learning_rate or LR can jump up and cause val loss to oscillate)
-  lr_scheduler: "ReduceLROnPlateau"
-  lr_scheduler_patience: 5
-  lr_scheduler_factor: 0.8
-  lr_scheduler_min_lr: 0.000001  # 1e-6; was 0.0001 which is > 0.00001 initial, causing LR to jump and val loss to swing
-  # Early stopping: stop soon when val loss stops improving (with few val tiles, val loss fluctuates; keep best model)
+  iou_threshold: 5.0  # Pixels with value >= this are considered lobes (lower = easier task)
   early_stopping_patience: 50
   early_stopping_min_delta: 0.00001
   # Gradient clipping (for stability)

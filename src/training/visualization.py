@@ -3,7 +3,7 @@ Visualization utilities for training metrics.
 """
 
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple, Union, Any, Sequence
 
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -114,46 +114,123 @@ def plot_mae_comparison(
     return fig
 
 
-def plot_loss(
+def plot_loss_simple(
     epochs: List[int],
     train_loss: List[float],
     val_loss: List[float],
     output_path: Optional[Path] = None,
 ) -> plt.Figure:
+    """Minimal loss plot (train + val curves only). Use during training for fast per-epoch updates."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(epochs, train_loss, 'b-', linewidth=2, label='Train Loss', marker='o', markersize=4)
+    ax.plot(epochs, val_loss, 'r-', linewidth=2, label='Val Loss', marker='s', markersize=4)
+    all_loss_values = train_loss + val_loss
+    y_min, y_max = _calculate_smart_ylim(all_loss_values)
+    ax.set_ylim(bottom=y_min, top=y_max)
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Loss', fontsize=12)
+    ax.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
+    x_lo, x_hi = _xlim_epochs(epochs)
+    ax.set_xlim(left=x_lo, right=x_hi)
+    ax.legend(loc='best', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    if output_path:
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    return fig
+
+
+def plot_loss(
+    epochs: List[int],
+    train_loss: List[float],
+    val_loss: List[float],
+    output_path: Optional[Path] = None,
+    *,
+    min_val_loss: Optional[float] = None,
+    early_stop_counter: Optional[List[int]] = None,
+    early_stopping_patience: Optional[int] = None,
+    config_summary: Optional[str] = None,
+    num_train_tiles: Optional[int] = None,
+    num_val_tiles: Optional[int] = None,
+    freeze_encoder: Optional[bool] = None,
+    unfreeze_after_epoch: Optional[int] = None,
+) -> plt.Figure:
     """
     Plot training and validation loss across epochs.
 
-    Args:
-        epochs: List of epoch numbers
-        train_loss: List of training loss values per epoch
-        val_loss: List of validation loss values per epoch
-        output_path: Optional path to save figure
-
-    Returns:
-        matplotlib Figure
+    Optional: min val_loss line with label, early-stop bar (right axis),
+    unfreeze vertical line (when freeze_encoder and unfreeze_after_epoch > 0),
+    and small-font config/tile info.
     """
     fig, ax = plt.subplots(figsize=(10, 6))
 
     ax.plot(epochs, train_loss, 'b-', linewidth=2, label='Train Loss', marker='o', markersize=4)
     ax.plot(epochs, val_loss, 'r-', linewidth=2, label='Val Loss', marker='s', markersize=4)
 
-    # Set Y-axis limits excluding outliers (combine both loss series)
+    min_val = min_val_loss if min_val_loss is not None else (min(val_loss) if val_loss else None)
+    if min_val is not None:
+        ax.axhline(y=min_val, color='gray', linestyle=':', linewidth=1.5, label=f'min val_loss = {min_val:.4f}')
     all_loss_values = train_loss + val_loss
+    if min_val is not None:
+        all_loss_values = all_loss_values + [min_val]
     y_min, y_max = _calculate_smart_ylim(all_loss_values)
     ax.set_ylim(bottom=y_min, top=y_max)
 
     ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Loss', fontsize=12)
     ax.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
-    ax.legend(loc='best', fontsize=10)
-    ax.grid(True, alpha=0.3)
     x_lo, x_hi = _xlim_epochs(epochs)
     ax.set_xlim(left=x_lo, right=x_hi)
 
-    plt.tight_layout()
+    if freeze_encoder and unfreeze_after_epoch is not None and unfreeze_after_epoch > 0:
+        ax.axvline(x=unfreeze_after_epoch, color='green', linestyle='-', linewidth=1.2)
+        label_y = y_max - 0.03 * (y_max - y_min) if y_max > y_min else y_max
+        ax.text(unfreeze_after_epoch, label_y, 'unfreeze', rotation=90, fontsize=9,
+                color='green', va='bottom', ha='center')
+
+    if early_stopping_patience is not None and early_stop_counter is not None and len(early_stop_counter) == len(epochs):
+        ax2 = ax.twinx()
+        ax2.bar(epochs, early_stop_counter, alpha=0.2, color='green', width=0.8)
+        ax2.set_ylim(0, early_stopping_patience)
+        ax2.set_ylabel('Early stop (patience)', fontsize=9, color='darkgreen')
+        ax2.tick_params(axis='y', labelcolor='darkgreen', labelsize=8)
+
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    info_lines = []
+    if config_summary:
+        info_lines.extend(s.strip() for s in config_summary.split("|") if s.strip())
+    if num_train_tiles is not None or num_val_tiles is not None:
+        tiles = f"tiles: train={num_train_tiles}" if num_train_tiles is not None else "tiles:"
+        if num_val_tiles is not None:
+            tiles += f" val={num_val_tiles}"
+        info_lines.append(tiles)
+
+    # Wrap long lines so config text never stretches the figure when saving
+    wrapped_lines = []
+    for line in info_lines:
+        if len(line) > 100:
+            for i in range(0, len(line), 100):
+                wrapped_lines.append(line[i : i + 100])
+        else:
+            wrapped_lines.append(line)
+    info_lines = wrapped_lines
+
+    if info_lines:
+        fig.subplots_adjust(left=0.28, bottom=0.12, right=0.88, top=0.92)
+        # Twin axis can keep a different position and blow up bbox_inches='tight'; sync to main axes
+        if early_stopping_patience is not None and early_stop_counter is not None and len(early_stop_counter) == len(epochs):
+            ax2.set_position(ax.get_position())
+        fig.text(0.02, 0.04, '\n'.join(info_lines), fontsize=6, ha='left', va='bottom',
+                 transform=fig.transFigure, family='monospace',
+                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8, edgecolor='lightgray'))
+    else:
+        plt.tight_layout()
 
     if output_path:
-        fig.savefig(output_path, dpi=150, bbox_inches='tight')
+        # Fixed size (no bbox_inches='tight') so width doesn't explode with twin axes / long text
+        fig.savefig(output_path, dpi=150)
 
     return fig
 
@@ -246,15 +323,22 @@ def create_training_plots(
     metrics_history: Dict[str, List[float]],
     baseline_mae: Optional[float] = None,
     output_dir: Optional[Path] = None,
+    loss_plot_options: Optional[Dict[str, Any]] = None,
+    which_plots: Optional[Sequence[str]] = None,
 ) -> Dict[str, plt.Figure]:
     """
-    Create all training plots from metrics history.
+    Create training plots from metrics history.
 
     Args:
         metrics_history: Dictionary with keys like 'epochs', 'train_loss', 'val_loss',
-                        'val_mae', 'val_iou', 'improvement_percent'
+                        'val_mae', 'val_iou', 'improvement_percent', optionally 'early_stop_counter'
         baseline_mae: Optional baseline MAE value
         output_dir: Optional directory to save figures
+        loss_plot_options: Optional dict for loss plot: config_summary, num_train_tiles,
+                          num_val_tiles, early_stopping_patience (early_stop_counter from metrics_history)
+        which_plots: If set, only create these plot names ('loss', 'mae_comparison', 'iou',
+                     'improvement_percent'). If None, create all. Use which_plots=['loss'] during
+                     training loop to avoid building all four figures every epoch.
 
     Returns:
         Dictionary mapping plot names to matplotlib Figures
@@ -264,9 +348,14 @@ def create_training_plots(
         return {}
 
     figures = {}
+    opts = loss_plot_options or {}
+    want = set(which_plots) if which_plots is not None else None
+
+    def _want(name: str) -> bool:
+        return want is None or name in want
 
     # MAE comparison
-    if 'val_mae' in metrics_history:
+    if _want('mae_comparison') and 'val_mae' in metrics_history:
         fig = plot_mae_comparison(
             epochs, metrics_history['val_mae'], baseline_mae
         )
@@ -275,23 +364,34 @@ def create_training_plots(
             fig.savefig(output_dir / 'mae_comparison.png', dpi=150, bbox_inches='tight')
 
     # Loss plot
-    if 'train_loss' in metrics_history and 'val_loss' in metrics_history:
+    if _want('loss') and 'train_loss' in metrics_history and 'val_loss' in metrics_history:
+        val_loss_list = metrics_history['val_loss']
+        min_val = min(val_loss_list) if val_loss_list else None
+        early_stop_counter = metrics_history.get('early_stop_counter')
         fig = plot_loss(
-            epochs, metrics_history['train_loss'], metrics_history['val_loss']
+            epochs, metrics_history['train_loss'], val_loss_list,
+            min_val_loss=min_val,
+            early_stop_counter=early_stop_counter,
+            early_stopping_patience=opts.get('early_stopping_patience'),
+            config_summary=opts.get('config_summary'),
+            num_train_tiles=opts.get('num_train_tiles'),
+            num_val_tiles=opts.get('num_val_tiles'),
+            freeze_encoder=opts.get('freeze_encoder'),
+            unfreeze_after_epoch=opts.get('unfreeze_after_epoch'),
         )
         figures['loss'] = fig
         if output_dir:
             fig.savefig(output_dir / 'loss.png', dpi=150, bbox_inches='tight')
 
     # IoU plot
-    if 'val_iou' in metrics_history:
+    if _want('iou') and 'val_iou' in metrics_history:
         fig = plot_iou(epochs, metrics_history['val_iou'])
         figures['iou'] = fig
         if output_dir:
             fig.savefig(output_dir / 'iou.png', dpi=150, bbox_inches='tight')
 
     # Improvement percentage
-    if 'improvement_percent' in metrics_history:
+    if _want('improvement_percent') and 'improvement_percent' in metrics_history:
         fig = plot_improvement_percentage(epochs, metrics_history['improvement_percent'])
         figures['improvement_percent'] = fig
         if output_dir:
@@ -351,7 +451,30 @@ def _load_rgb_for_display(features_path: Path, features_base_dir: Path) -> np.nd
     return rgb
 
 
-def show_best_predicted_tile(
+def _add_proximity_scale_and_extrema(
+    ax: plt.Axes,
+    data: np.ndarray,
+    vmin: float = 0.0,
+    vmax: float = 20.0,
+) -> None:
+    im = ax.imshow(data, vmin=vmin, vmax=vmax, cmap="viridis")
+    plt.colorbar(im, ax=ax, shrink=0.7, label="proximity")
+    flat = np.nan_to_num(data, nan=np.nanmean(data)).ravel()
+    if flat.size == 0:
+        return
+    min_val = float(np.min(flat))
+    max_val = float(np.max(flat))
+    min_idx = np.argmin(data)
+    max_idx = np.argmax(data)
+    min_rc = np.unravel_index(min_idx, data.shape)
+    max_rc = np.unravel_index(max_idx, data.shape)
+    ax.scatter(min_rc[1], min_rc[0], marker="x", s=100, c="black", linewidths=2, zorder=5)
+    ax.scatter(max_rc[1], max_rc[0], marker="x", s=100, c="black", linewidths=2, zorder=5)
+    ax.text(min_rc[1], min_rc[0] - 13, f"{min_val:.1f}", color="black", fontsize=8, ha="center", va="top", zorder=6)
+    ax.text(max_rc[1], max_rc[0] + 13, f"{max_val:.1f}", color="black", fontsize=8, ha="center", va="bottom", zorder=6)
+
+
+def _create_tile_prediction_figure(
     model: torch.nn.Module,
     tile_info: dict,
     features_dir: Path,
@@ -360,7 +483,7 @@ def show_best_predicted_tile(
     device: torch.device,
     tile_size: int,
     iou_threshold: float,
-    loss_value: float,
+    title: str,
 ) -> plt.Figure:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -394,24 +517,101 @@ def show_best_predicted_tile(
     fp = tile_info.get("features_path", "")
     rgb = _load_rgb_for_display(Path(fp.replace("\\", "/")), Path(features_dir))
     tid = tile_info.get("tile_id", "tile_0")
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    vmin, vmax = 0.0, 20.0
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
     axes[0].imshow(rgb)
     axes[0].set_title("RGB")
     axes[0].axis("off")
-    vmin, vmax = 0.0, 20.0
-    axes[1].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
     axes[1].set_title("Proximity (target)")
+    _add_proximity_scale_and_extrema(axes[1], target_np, vmin, vmax)
     axes[1].axis("off")
-    axes[2].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
     axes[2].set_title("Prediction")
+    _add_proximity_scale_and_extrema(axes[2], pred_np, vmin, vmax)
     axes[2].axis("off")
-    title = (
-        f"Best predicted tile: {tid}  |  loss: {loss_value:.6f}  "
-        f"MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}"
+    fig.suptitle(
+        f"{title}: {tid}  |  MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}",
+        fontsize=10,
     )
-    fig.suptitle(title, fontsize=10)
     plt.tight_layout()
     return fig
+
+
+def show_best_predicted_tile(
+    model: torch.nn.Module,
+    tile_info: dict,
+    features_dir: Path,
+    targets_dir: Path,
+    normalization_stats: dict,
+    device: torch.device,
+    tile_size: int,
+    iou_threshold: float,
+    loss_value: float,
+) -> plt.Figure:
+    from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
+
+    rep_tiles = [tile_info]
+    first_path = Path(features_dir) / tile_info.get("features_path", "").replace("\\", "/")
+    if first_path.exists():
+        with rasterio.open(first_path) as src:
+            h, w = src.height, src.width
+            if h == w:
+                tile_size = int(h)
+    from src.training.dataloader import TileDataset
+
+    model.eval()
+    dataset = TileDataset(
+        rep_tiles,
+        Path(features_dir),
+        Path(targets_dir),
+        normalization_stats,
+        tile_size=tile_size,
+    )
+    features, target = dataset[0]
+    features_batch = features.unsqueeze(0).to(device)
+    with torch.no_grad():
+        pred = model(features_batch)
+    pred_cpu = pred.squeeze(0).cpu()
+    target_cpu = target.unsqueeze(0)
+    mae = compute_mae(pred_cpu, target_cpu)
+    rmse = compute_rmse(pred_cpu, target_cpu)
+    iou = compute_iou(pred_cpu, target_cpu, threshold=iou_threshold)
+    title = f"Lowest-loss tile  |  loss: {loss_value:.6f}"
+    return _create_tile_prediction_figure(
+        model,
+        tile_info,
+        features_dir,
+        targets_dir,
+        normalization_stats,
+        device,
+        tile_size,
+        iou_threshold,
+        title,
+    )
+
+
+def show_highest_iou_tile(
+    model: torch.nn.Module,
+    tile_info: dict,
+    features_dir: Path,
+    targets_dir: Path,
+    normalization_stats: dict,
+    device: torch.device,
+    tile_size: int,
+    iou_threshold: float,
+    iou_value: float,
+) -> plt.Figure:
+    title = f"Highest IoU tile  |  IoU: {iou_value:.4f}"
+    return _create_tile_prediction_figure(
+        model,
+        tile_info,
+        features_dir,
+        targets_dir,
+        normalization_stats,
+        device,
+        tile_size,
+        iou_threshold,
+        title,
+    )
 
 
 def create_prediction_tile_figures(

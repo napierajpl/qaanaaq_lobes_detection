@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document explains how our lobe detection model works, from input data to predictions. The model uses a U-Net architecture to predict proximity maps that indicate the distance and location of glacial lobes in satellite imagery.
+This document explains how our lobe detection model works, from input data to predictions. The model uses a U-Net architecture to predict proximity maps that indicate the distance and location of solifluction lobes in satellite imagery.
 
 ## Model Architecture: U-Net
 
