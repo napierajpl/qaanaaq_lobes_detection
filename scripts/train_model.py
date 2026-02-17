@@ -38,6 +38,7 @@ from src.training.visualization import (
     resolve_representative_tiles,
     create_prediction_tile_figures,
     show_best_predicted_tile,
+    show_highest_iou_tile,
 )
 from src.preprocessing.normalization import compute_statistics
 from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics
@@ -45,6 +46,7 @@ from src.utils.path_utils import get_project_root, resolve_path
 from src.utils.config_utils import (
     apply_best_hyperparameters,
     apply_hyperparameters_from_mlflow_run,
+    get_training_path_key,
     APPLIED_HP_DISPLAY_KEYS,
 )
 from src.utils.proximity_utils import infer_proximity_token, detect_proximity_params
@@ -93,8 +95,11 @@ def train_model_with_config(
     """
     project_root = get_project_root(Path(__file__))
 
+    if mode == "synthetic_parenthesis":
+        config["data"]["use_background_and_augmentation"] = False
+
     tile_size = config["data"].get("tile_size", 256)
-    path_key = mode if tile_size == 256 else f"{mode}_512"
+    path_key = get_training_path_key(mode, tile_size)
     paths = config["paths"][path_key]
 
     filtered_tiles_path = resolve_path(Path(paths["filtered_tiles"]), project_root)
@@ -375,6 +380,8 @@ def train_model_with_config(
         iou_threshold = config["training"].get("iou_threshold", 5.0)
         best_tile_loss_so_far = float("inf")
         best_tile_info_so_far = None
+        best_iou_so_far = -1.0
+        best_iou_tile_info_so_far = None
 
         # Track metrics across epochs for visualization
         metrics_history = {
@@ -442,11 +449,12 @@ def train_model_with_config(
             )
 
             # Validate
-            val_metrics, best_tile_result = validate(
+            val_metrics, best_tile_result, best_iou_tile_result, _ = validate(
                 model, val_loader, criterion, device, epoch,
                 iou_threshold=iou_threshold,
                 val_tile_list=val_tiles,
                 return_best_tile=(trial is None),
+                return_batch_losses=False,
             )
 
             # Track metrics
@@ -559,9 +567,35 @@ def train_model_with_config(
                         fig.savefig(best_tile_plot_path, dpi=150, bbox_inches="tight")
                     plt.close(fig)
                     logger.info(
-                        "Updated best predicted tile: %s loss=%.6f",
+                        "Updated lowest-loss tile: %s loss=%.6f",
                         best_tile_info_so_far.get("tile_id", "?"),
                         best_tile_loss_so_far,
+                    )
+            if trial is None and best_iou_tile_result is not None:
+                tile_info, tile_iou = best_iou_tile_result
+                if tile_iou > best_iou_so_far:
+                    best_iou_so_far = tile_iou
+                    best_iou_tile_info_so_far = tile_info
+                    fig = show_highest_iou_tile(
+                        model,
+                        best_iou_tile_info_so_far,
+                        features_dir,
+                        targets_dir,
+                        normalization_stats,
+                        device,
+                        tile_size,
+                        iou_threshold,
+                        best_iou_so_far,
+                    )
+                    mlflow.log_figure(fig, "plots/best_iou_tile.png")
+                    if loss_plot_path is not None:
+                        best_iou_plot_path = loss_plot_path.parent / "best_iou_tile.png"
+                        fig.savefig(best_iou_plot_path, dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+                    logger.info(
+                        "Updated highest IoU tile: %s IoU=%.4f",
+                        best_iou_tile_info_so_far.get("tile_id", "?"),
+                        best_iou_so_far,
                     )
 
             # One-line epoch summary (helps spot early-stop / baseline progress)
@@ -728,6 +762,13 @@ def main():
         help="Use dev tiles (cropped 1024x1024) instead of full dataset",
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["dev", "production", "synthetic_parenthesis"],
+        default=None,
+        help="Dataset mode: dev, production, or synthetic_parenthesis (sanity-check). Default: dev if --dev else production.",
+    )
+    parser.add_argument(
         "--run-name",
         type=str,
         default=None,
@@ -800,7 +841,10 @@ def main():
         )
 
     # Determine mode
-    mode = "dev" if args.dev else "production"
+    if args.mode is not None:
+        mode = args.mode
+    else:
+        mode = "dev" if args.dev else "production"
 
     # Call the extracted training function
     train_model_with_config(

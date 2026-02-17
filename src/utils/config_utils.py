@@ -6,6 +6,15 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
+def get_training_path_key(mode: str, tile_size: int) -> str:
+    """Return the paths config key for (mode, tile_size). Synthetic uses synthetic_parenthesis_256 or _512."""
+    if mode == "synthetic_parenthesis":
+        return f"synthetic_parenthesis_{tile_size}"
+    if tile_size == 256:
+        return mode
+    return f"{mode}_512"
+
 import yaml
 
 logger = logging.getLogger(__name__)

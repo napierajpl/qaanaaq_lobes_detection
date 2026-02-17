@@ -103,7 +103,8 @@ def validate(
     iou_threshold: float = 5.0,
     val_tile_list: Optional[List[dict]] = None,
     return_best_tile: bool = False,
-) -> Tuple[Dict[str, float], Optional[Tuple[dict, float]]]:
+    return_batch_losses: bool = False,
+) -> Tuple[Dict[str, float], Optional[Tuple[dict, float]], Optional[Tuple[dict, float]], Optional[List[float]]]:
     """
     Validate model.
 
@@ -115,10 +116,12 @@ def validate(
         epoch: Current epoch number
         iou_threshold: Threshold for IoU calculation
         val_tile_list: Optional list of validation tile info (for baseline comparison)
-        return_best_tile: If True and val_tile_list provided, return (tile_info, loss) for tile with lowest loss
+        return_best_tile: If True and val_tile_list provided, return lowest-loss and highest-IoU tiles
+        return_batch_losses: If True, return list of per-batch validation losses (for spike debugging)
 
     Returns:
-        (metrics_dict, best_tile_result). best_tile_result is (tile_info, loss) or None.
+        (metrics_dict, best_tile_result, best_iou_tile_result, batch_losses).
+        batch_losses is None unless return_batch_losses=True.
     """
     model.eval()
 
@@ -127,8 +130,10 @@ def validate(
     total_rmse = 0.0
     total_iou = 0.0
     num_batches = 0
+    batch_losses: List[float] = [] if return_batch_losses else []
 
     best_tile_result: Optional[Tuple[dict, float]] = None
+    best_iou_tile_result: Optional[Tuple[dict, float]] = None
     tile_index = 0
 
     # For baseline comparison - compute aggregate baseline MAE from tile list
@@ -166,7 +171,7 @@ def validate(
             rmse = compute_rmse(outputs, targets)
             iou = compute_iou(outputs, targets, threshold=iou_threshold)
 
-            # Per-sample loss for best-tile tracking (same criterion as training)
+            # Per-sample loss and IoU for best-tile tracking
             if return_best_tile and val_tile_list is not None:
                 batch_size = outputs.size(0)
                 for i in range(batch_size):
@@ -175,8 +180,13 @@ def validate(
                     sample_loss = criterion(
                         outputs[i : i + 1], targets[i : i + 1]
                     ).item()
+                    sample_iou = compute_iou(
+                        outputs[i : i + 1], targets[i : i + 1], threshold=iou_threshold
+                    )
                     if best_tile_result is None or sample_loss < best_tile_result[1]:
                         best_tile_result = (val_tile_list[tile_index].copy(), sample_loss)
+                    if best_iou_tile_result is None or sample_iou > best_iou_tile_result[1]:
+                        best_iou_tile_result = (val_tile_list[tile_index].copy(), sample_iou)
                     tile_index += 1
 
             # Collect statistics for diagnostics
@@ -188,6 +198,8 @@ def validate(
             total_rmse += rmse
             total_iou += iou
             num_batches += 1
+            if return_batch_losses:
+                batch_losses.append(loss.item())
 
             # Update progress bar
             pbar.set_postfix({
@@ -227,6 +239,9 @@ def validate(
         "val_mae": avg_mae,
         "val_rmse": avg_rmse,
         "val_iou": avg_iou,
+        "val_pred_min": pred_min,
+        "val_pred_max": pred_max,
+        "val_pred_mean": pred_mean,
     }
 
     # Add baseline comparison if tile info available
@@ -239,7 +254,8 @@ def validate(
         metrics["val_improvement_over_baseline"] = improvement
         metrics["val_better_than_baseline"] = float(is_better)  # 1.0 if better, 0.0 if not
 
-    return (metrics, best_tile_result)
+    out_batch_losses = batch_losses if return_batch_losses else None
+    return (metrics, best_tile_result, best_iou_tile_result, out_batch_losses)
 
 
 def save_checkpoint(

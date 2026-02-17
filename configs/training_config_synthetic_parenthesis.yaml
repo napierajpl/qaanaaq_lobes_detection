@@ -1,0 +1,156 @@
+model:
+  # Architecture options:
+  #   - "unet": Baseline U-Net without pretrained encoder
+  #   - "satlaspretrain_unet": U-Net with SatlasPretrain pretrained encoder (recommended)
+  architecture: "satlaspretrain_unet"
+  in_channels: 5
+  out_channels: 1
+
+  # UNet-specific parameters (only used if architecture == "unet")
+  base_channels: 64
+  dropout: 0.2  # Dropout for regularization (prevents overfitting)
+
+  # SatlasPretrain-specific parameters (only used if architecture == "satlaspretrain_unet")
+  # For synthetic: unfreeze from start (0) so encoder BatchNorm running stats adapt to our data;
+  # otherwise at eval() BN uses pretrained stats and encoder output is constant -> val predictions all 0.
+  encoder:
+    name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
+    pretrained: true  # Use pretrained weights from SatlasPretrain
+    freeze_encoder: true  # Unfreeze so BN stats update; with true + eval(), val preds collapse to 0
+    unfreeze_after_epoch: 5  # 0 = never freeze (encoder trainable from epoch 0)
+  decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
+  # Optional SE + PPM (Gully-ERFNet style). Ablation: set use_se/use_ppm true/false as needed.
+  use_se: true
+  use_ppm: true
+  # ppm_bins: [1, 2, 3, 6]  # optional; default (1,2,3,6)
+  # se_reduction: 16  # optional; default 16
+  # Bound output to target range [0, 20] (proximity maps). Avoids negative predictions.
+  proximity_max: 20  # 0 = no bound
+  # output_activation: "clamp" | "sigmoid" | "sigmoid_steep". clamp = no saturation at 0/20 (default). sigmoid_steep = steeper curve, larger gradients near extremes.
+  output_activation: clamp
+  # sigmoid_temperature: 0.3  # for sigmoid_steep only; smaller = steeper
+
+training:
+  batch_size: 16
+  num_epochs: 2000  # Increased from 50 - U-Net typically needs 100+ epochs
+  learning_rate: 0.000005  # 5e-6; lower than 1e-5 to avoid big steps when encoder unfrozen (reduces val spike/fluctuation)
+  optimizer: "Adam"
+  # Loss function options:
+  #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
+  #   - "weighted_smooth_l1": Weighted Smooth L1 (handles class imbalance)
+  #   - "dice": Dice loss (directly optimizes for segmentation overlap)
+  #   - "iou": IoU loss (directly optimizes for intersection over union)
+  #   - "soft_iou": Soft IoU using sigmoid (smooth gradients, better for training)
+  #   - "encouragement": Encourages model to predict higher values for lobe areas
+  #   - "focal": Focal Loss - can converge to constant (~6); different scale; see docs/daily_diary (Feb 2026).
+  #   - "combined": IoU + Weighted Smooth L1; best val loss in tuning, more stable (diary: combined preferred).
+  #   - "acl": Adaptive Correction Loss (Gully-ERFNet): λ·Dice + (1−λ)·Focal; linear structures, imbalance.
+  #   See docs/loss_functions.md for full descriptions and config params.
+  loss_function: "acl"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
+  weight_decay: 0.001  # Increased from 0.0001 to reduce overfitting
+  # Weighted loss parameters (for weighted_smooth_l1 and combined)
+  lobe_weight: 5.0  # Weight for lobe pixels (value >= threshold) - not used with encouragement
+  # Combined loss weights (only used if loss_function == "combined")
+  iou_weight: 0.5  # Weight for IoU component in combined loss
+  regression_weight: 0.5  # Weight for regression component in combined loss
+  use_soft_iou: true  # Use soft IoU in combined loss (smooth gradients)
+  # ACL loss (only used if loss_function == "acl")
+  acl_lambda: 0.5  # Weight on Dice (0-1); (1-acl_lambda) on Focal. 0.5 = equal Dice and Focal.
+  # Encouragement loss weight (only used if loss_function == "encouragement")
+  encouragement_weight: 10.0  # Increased from 2.0 - stronger penalty for predictions below threshold
+  # Focal Loss parameters (only used if loss_function == "focal" or "acl")
+  focal_alpha: 0.75  # Weighting factor (0.75 = more weight on lobes, 0.25 = more on background)
+  focal_gamma: 2.0  # Focusing parameter (higher = more focus on hard examples, 2.0 is standard)
+  # IoU threshold for lobe detection
+  # IMPORTANT: How IoU works with proximity maps:
+  #   - Proximity maps have values 0-20: 0=background, 1-19=proximity, 20=lobe center
+  #   - IoU binarizes: pred >= threshold → 1 (lobe area), else 0 (background)
+  #   - With threshold=1.0: any pixel >= 1.0 is considered "lobe area" (includes proximity)
+  #   - IoU = intersection / union of these binary masks
+  #   - If model predicts all values < 1.0, IoU will be 0 (no overlap)
+  #   - Note: Proximity zone expanded to 20px (Jan 22, 2026) for better class balance
+  iou_threshold: 1.0  # Pixels with value >= this are considered lobes (lower = easier task)
+  # Learning rate scheduler (min_lr must be < learning_rate or LR can jump up and cause val loss to oscillate)
+  lr_scheduler: "ReduceLROnPlateau"
+  lr_scheduler_patience: 5
+  lr_scheduler_factor: 0.8
+  lr_scheduler_min_lr: 0.000001  # 1e-6; was 0.0001 which is > 0.00001 initial, causing LR to jump and val loss to swing
+  # Early stopping: stop soon when val loss stops improving (with few val tiles, val loss fluctuates; keep best model)
+  early_stopping_patience: 50
+  early_stopping_min_delta: 0.00001
+  # Gradient clipping (for stability)
+  max_grad_norm: 1.0
+
+data:
+  # Tile size in pixels (256 or 512). Use 512 to match literature; 256 for faster training.
+  tile_size: 512
+  train_split: 0.7
+  val_split: 0.15   # With --max-tiles 50 only ~4 val tiles -> very noisy val loss; use more tiles or higher val_split for stability
+  test_split: 0.15
+  normalize_rgb: true
+  standardize_dem: true
+  standardize_slope: true
+  # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).
+  # Prepare that file with: scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml
+  use_background_and_augmentation: false
+  # Subsampling: use a random subset of train tiles each epoch (0.0–1.0). Reduces time per epoch and can reduce overtraining.
+  # 1.0 = use all tiles; e.g. 0.3 = 30% of tiles per epoch, different random subset each epoch.
+  train_subsample_ratio: 1.0
+
+# Representative tiles for post-training prediction visualization (logged to MLflow).
+# List tile indices (int) and/or tile_id strings (e.g. "tile_01234"). Empty list = skip.
+# 256x256: dev has 36 tiles (tile_0000..tile_0035); production has many more (use indices or tile_id).
+# 512x512: fewer tiles; use representative_tile_ids_512 / representative_tile_ids_dev_512 when training with tile_size 512.
+visualization:
+  representative_tile_ids: [19189, 19874, 20208, 20380, 20707]
+  representative_tile_ids_512: [4750, 5005, 5513, 6953, 7370]  # Optional: for 512x512 production; use indices valid for 512 grid
+  representative_tile_ids_dev_512: [0, 1, 2, 3]  # Optional: for 512x512 dev
+  # When configured IDs don't match any tile (e.g. wrong grid), use first N tiles so MLflow always gets example figures
+  prediction_tiles_fallback_n: 5  # 0 = no fallback
+
+mlflow:
+  experiment_name: "lobe_detection"
+  tracking_uri: "file:./mlruns"
+  log_artifacts: true
+  log_model: true
+
+paths:
+  # Dev mode, 256x256 tiles
+  dev:
+    filtered_tiles: "data/processed/tiles/dev/train/filtered_tiles.json"
+    features_dir: "data/processed/tiles/dev/train/features"
+    targets_dir: "data/processed/tiles/dev/train/targets"
+    models_dir: "data/models/dev"
+
+  # Dev mode, 512x512 tiles
+  dev_512:
+    filtered_tiles: "data/processed/tiles/dev/train_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/dev/train_512/features"
+    targets_dir: "data/processed/tiles/dev/train_512/targets"
+    models_dir: "data/models/dev"
+
+  # Production mode, 256x256 tiles
+  production:
+    filtered_tiles: "data/processed/tiles/train/filtered_tiles.json"
+    features_dir: "data/processed/tiles/train/features"
+    targets_dir: "data/processed/tiles/train/targets"
+    models_dir: "data/models/production"
+
+  # Production mode, 512x512 tiles
+  production_512:
+    filtered_tiles: "data/processed/tiles/train_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/train_512/features"
+    targets_dir: "data/processed/tiles/train_512/targets"
+    models_dir: "data/models/production"
+
+  # Synthetic parenthesis (sanity-check): 256 or 512. Generate with generate_synthetic_parenthesis_dataset.py
+  synthetic_parenthesis_256:
+    filtered_tiles: "data/processed/tiles/synthetic_parenthesis_256/filtered_tiles.json"
+    features_dir: "data/processed/tiles/synthetic_parenthesis_256/features"
+    targets_dir: "data/processed/tiles/synthetic_parenthesis_256/targets"
+    models_dir: "data/models/synthetic_parenthesis"
+  synthetic_parenthesis_512:
+    filtered_tiles: "data/processed/tiles/synthetic_parenthesis_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/synthetic_parenthesis_512/features"
+    targets_dir: "data/processed/tiles/synthetic_parenthesis_512/targets"
+    models_dir: "data/models/synthetic_parenthesis"

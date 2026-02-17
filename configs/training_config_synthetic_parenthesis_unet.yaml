@@ -1,0 +1,88 @@
+# Synthetic parenthesis pipeline: baseline U-Net from scratch (no pretrained encoder).
+# Use this to remove the pretrained-encoder variable and see if training is more stable
+# and can reach loss < 1 with more epochs. Same data and loss as training_config_synthetic_parenthesis.yaml.
+# Run: pipelines/run_synthetic_parenthesis_pipeline.sh then train with:
+#   --config configs/training_config_synthetic_parenthesis_unet.yaml --mode synthetic_parenthesis
+
+model:
+  architecture: "unet"  # No pretrained encoder; train from scratch (removes BN/pretrained unknowns)
+  in_channels: 5
+  out_channels: 1
+  base_channels: 64
+  dropout: 0.2
+  proximity_max: 20
+  output_activation: clamp
+
+training:
+  batch_size: 8
+  num_epochs: 2000
+  learning_rate: 0.0001  # 1e-4; from-scratch can use higher LR than fine-tuning (was 5e-6 for pretrained)
+  optimizer: "Adam"
+  loss_function: "acl"
+  weight_decay: 0.001
+  acl_lambda: 0.5
+  focal_alpha: 0.75
+  focal_gamma: 2.0
+  iou_threshold: 1.0
+  lr_scheduler: "ReduceLROnPlateau"
+  lr_scheduler_patience: 5
+  lr_scheduler_factor: 0.8
+  lr_scheduler_min_lr: 0.000001
+  early_stopping_patience: 40  # Allow more epochs to reach loss < 1 before stopping
+  early_stopping_min_delta: 0.00001
+  max_grad_norm: 1.0
+
+data:
+  tile_size: 512
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  normalize_rgb: true
+  standardize_dem: true
+  standardize_slope: true
+  use_background_and_augmentation: false
+  train_subsample_ratio: 1.0
+
+visualization:
+  representative_tile_ids: [19189, 19874, 20208, 20380, 20707]
+  representative_tile_ids_512: [4750, 5005, 5513, 6953, 7370]
+  representative_tile_ids_dev_512: [0, 1, 2, 3]
+  prediction_tiles_fallback_n: 5
+
+mlflow:
+  experiment_name: "lobe_detection"
+  tracking_uri: "file:./mlruns"
+  log_artifacts: true
+  log_model: true
+
+paths:
+  dev:
+    filtered_tiles: "data/processed/tiles/dev/train/filtered_tiles.json"
+    features_dir: "data/processed/tiles/dev/train/features"
+    targets_dir: "data/processed/tiles/dev/train/targets"
+    models_dir: "data/models/dev"
+  dev_512:
+    filtered_tiles: "data/processed/tiles/dev/train_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/dev/train_512/features"
+    targets_dir: "data/processed/tiles/dev/train_512/targets"
+    models_dir: "data/models/dev"
+  production:
+    filtered_tiles: "data/processed/tiles/train/filtered_tiles.json"
+    features_dir: "data/processed/tiles/train/features"
+    targets_dir: "data/processed/tiles/train/targets"
+    models_dir: "data/models/production"
+  production_512:
+    filtered_tiles: "data/processed/tiles/train_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/train_512/features"
+    targets_dir: "data/processed/tiles/train_512/targets"
+    models_dir: "data/models/production"
+  synthetic_parenthesis_256:
+    filtered_tiles: "data/processed/tiles/synthetic_parenthesis_256/filtered_tiles.json"
+    features_dir: "data/processed/tiles/synthetic_parenthesis_256/features"
+    targets_dir: "data/processed/tiles/synthetic_parenthesis_256/targets"
+    models_dir: "data/models/synthetic_parenthesis"
+  synthetic_parenthesis_512:
+    filtered_tiles: "data/processed/tiles/synthetic_parenthesis_512/filtered_tiles.json"
+    features_dir: "data/processed/tiles/synthetic_parenthesis_512/features"
+    targets_dir: "data/processed/tiles/synthetic_parenthesis_512/targets"
+    models_dir: "data/models/synthetic_parenthesis"
