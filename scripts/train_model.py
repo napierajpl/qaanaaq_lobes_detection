@@ -5,6 +5,7 @@ Train CNN model for lobe detection.
 
 import logging
 import sys
+import time
 import warnings
 import yaml
 from pathlib import Path
@@ -50,6 +51,7 @@ from src.utils.config_utils import (
     APPLIED_HP_DISPLAY_KEYS,
 )
 from src.utils.proximity_utils import infer_proximity_token, detect_proximity_params
+from src.utils.voice_notify import notify_training_finished
 
 logging.basicConfig(
     level=logging.INFO,
@@ -225,10 +227,10 @@ def train_model_with_config(
         weight_decay=config["training"]["weight_decay"],
     )
 
-    # Setup learning rate scheduler
+    # Setup learning rate scheduler (use null or "none" for fixed LR)
     lr_scheduler = None
     lr_scheduler_config = config["training"].get("lr_scheduler")
-    if lr_scheduler_config:
+    if lr_scheduler_config and str(lr_scheduler_config).lower() != "none":
         if lr_scheduler_config == "ReduceLROnPlateau":
             lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
@@ -242,6 +244,8 @@ def train_model_with_config(
             logger.info(f"Using ReduceLROnPlateau scheduler (patience={patience}, factor={factor})")
         else:
             logger.warning(f"Unknown LR scheduler '{lr_scheduler_config}', ignoring")
+    else:
+        logger.info("No LR scheduler (fixed learning rate)")
 
     # Setup early stopping
     early_stopping_patience = config["training"].get("early_stopping_patience")
@@ -413,6 +417,7 @@ def train_model_with_config(
         unfreeze_after_epoch = encoder_config.get("unfreeze_after_epoch", 0)
         encoder_unfrozen = False
 
+        training_start_time = time.time()
         for epoch in range(1, config["training"]["num_epochs"] + 1):
             if train_subsample_ratio < 1.0:
                 rng = np.random.default_rng(epoch)
@@ -664,6 +669,10 @@ def train_model_with_config(
                     flush=True,
                 )
             print(f"[MLFLOW] tracking_uri={tracking_uri}", flush=True)
+
+        if trial is None:
+            elapsed_seconds = time.time() - training_start_time
+            notify_training_finished(elapsed_seconds, epoch)
 
         # For non-Optuna runs, load best checkpoint so plots, prediction viz, and MLflow model use it
         if trial is None and best_model_path.exists():
