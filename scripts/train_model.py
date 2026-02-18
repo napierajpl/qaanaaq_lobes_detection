@@ -8,6 +8,7 @@ import sys
 import time
 import warnings
 import yaml
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -43,7 +44,7 @@ from src.training.visualization import (
     show_highest_iou_tile,
 )
 from src.preprocessing.normalization import compute_statistics
-from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics
+from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics, get_intention_suggestion
 from src.utils.path_utils import get_project_root, resolve_path
 from src.utils.config_utils import (
     apply_best_hyperparameters,
@@ -102,6 +103,8 @@ def train_model_with_config(
         config["data"]["use_background_and_augmentation"] = False
 
     tile_size = config["data"].get("tile_size", 256)
+    target_mode = (config.get("target_mode") or "proximity").lower()
+    binary_threshold = float(config.get("binary_threshold", 1.0))
     path_key = get_training_path_key(mode, tile_size)
     paths = config["paths"][path_key]
 
@@ -111,7 +114,7 @@ def train_model_with_config(
     models_dir = resolve_path(Path(paths["models_dir"]), project_root)
 
     logger.info("=== Training Configuration ===")
-    logger.info(f"Mode: {mode} (tile size: {tile_size}x{tile_size})")
+    logger.info(f"Mode: {mode} (tile size: {tile_size}x{tile_size}), target_mode: {target_mode}")
     logger.info(f"Filtered tiles: {filtered_tiles_path}")
     logger.info(f"Features dir: {features_dir}")
     logger.info(f"Targets dir: {targets_dir}")
@@ -195,15 +198,21 @@ def train_model_with_config(
         normalization_stats,
         batch_size=config["training"]["batch_size"],
         tile_size=tile_size,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
     )
 
     # Setup device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # Create model using factory
+    # Create model using factory (binary mode: output [0,1] via sigmoid)
     logger.info("Creating model...")
-    model = create_model(config["model"]).to(device)
+    model_config = dict(config["model"])
+    if target_mode == "binary":
+        model_config["proximity_max"] = 1
+        model_config["output_activation"] = "sigmoid"
+    model = create_model(model_config).to(device)
 
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
@@ -219,8 +228,11 @@ def train_model_with_config(
                    f"(pretrained={encoder_config.get('pretrained', False)}, "
                    f"frozen={encoder_config.get('freeze_encoder', False)})")
 
-    iou_threshold = config["training"].get("iou_threshold", 5.0)
-    criterion = create_criterion(config["training"])
+    iou_threshold = (
+        0.5 if target_mode == "binary"
+        else config["training"].get("iou_threshold", 5.0)
+    )
+    criterion = create_criterion(config["training"], target_mode=target_mode)
 
     optimizer = optim.Adam(
         model.parameters(),
@@ -293,6 +305,7 @@ def train_model_with_config(
         # Log config
         log_training_config(config)
         mlflow.log_param("mode", mode)
+        mlflow.log_param("target_mode", target_mode)
         mlflow.log_param("num_params", num_params)
         if applied_best_hparams is not None:
             hp = applied_best_hparams.get("hyperparameters") or {}
@@ -404,20 +417,31 @@ def train_model_with_config(
         enc = config.get("model", {}).get("encoder", {})
         tr = config.get("training", {})
         da = config.get("data", {})
+
+        def _fmt(v):
+            if v is None:
+                return "?"
+            if isinstance(v, float):
+                s = f"{v:.10f}".rstrip("0").rstrip(".")
+                return s if s else "0"
+            return str(v)
+
+        out_act = "sigmoid" if target_mode == "binary" else config.get("model", {}).get("output_activation", "?")
         loss_plot_config_parts = [
             f"arch={config.get('model', {}).get('architecture', '?')}",
-            f"drop={config.get('model', {}).get('dropout', '?')}",
+            f"drop={_fmt(config.get('model', {}).get('dropout'))}",
             f"enc={enc.get('name', '?')}",
             f"pretrain={enc.get('pretrained', '?')}",
             f"freeze={enc.get('freeze_encoder', '?')}",
             f"unfreeze_ep={enc.get('unfreeze_after_epoch', '?')}",
-            f"dec_drop={config.get('model', {}).get('decoder_dropout', '?')}",
+            f"dec_drop={_fmt(config.get('model', {}).get('decoder_dropout'))}",
+            f"out_act={out_act}",
             f"batch={tr.get('batch_size', '?')}",
             f"ep={tr.get('num_epochs', '?')}",
-            f"lr={tr.get('learning_rate', '?')}",
+            f"lr={_fmt(tr.get('learning_rate'))}",
             f"loss={tr.get('loss_function', '?')}",
             f"tile={da.get('tile_size', '?')}",
-            f"train_split={da.get('train_split', '?')}",
+            f"train_split={_fmt(da.get('train_split'))}",
         ]
         loss_plot_options = {
             "config_summary": " | ".join(loss_plot_config_parts),
@@ -430,6 +454,21 @@ def train_model_with_config(
 
         logger.info("=== Starting Training ===")
         logger.info(f"IoU threshold: {iou_threshold}")
+
+        if trial is None:
+            run_intention = None
+            active = mlflow.active_run()
+            if active is not None:
+                suggestion = get_intention_suggestion(active.info.experiment_id, active.info.run_id)
+                if suggestion:
+                    print(f"Suggestion: {suggestion}", flush=True)
+            try:
+                run_intention = input("Run intention (subtitle): ").strip() or None
+            except EOFError:
+                run_intention = None
+            loss_plot_options["run_intention"] = run_intention
+        else:
+            loss_plot_options["run_intention"] = None
 
         # Create initial placeholder so the printed path exists before first epoch (training and Optuna trials)
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -448,6 +487,7 @@ def train_model_with_config(
         encoder_unfrozen = False
 
         training_start_time = time.time()
+        loss_plot_options["training_start_datetime"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         for epoch in range(1, config["training"]["num_epochs"] + 1):
             if train_subsample_ratio < 1.0:
                 rng = np.random.default_rng(epoch)
@@ -462,6 +502,8 @@ def train_model_with_config(
                     normalization_stats,
                     batch_size=config["training"]["batch_size"],
                     tile_size=tile_size,
+                    target_mode=target_mode,
+                    binary_threshold=binary_threshold,
                 )
 
             # Unfreeze encoder if specified epoch reached
@@ -614,6 +656,8 @@ def train_model_with_config(
                             tile_size,
                             iou_threshold,
                             best_tile_loss_so_far,
+                            target_mode=target_mode,
+                            binary_threshold=binary_threshold,
                         )
                         mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                         if loss_plot_path is not None:
@@ -631,6 +675,8 @@ def train_model_with_config(
                             tile_size,
                             iou_threshold,
                             best_iou_so_far,
+                            target_mode=target_mode,
+                            binary_threshold=binary_threshold,
                         )
                         mlflow.log_figure(fig, "plots/best_iou_tile.png")
                         if loss_plot_path is not None:
@@ -724,6 +770,7 @@ def train_model_with_config(
         # Create and log full visualization plots including advanced loss; overwrite loss.png with advanced version
         if trial is None:
             logger.info("=== Creating Training Plots ===")
+            loss_plot_options["training_duration_seconds"] = elapsed_seconds
             figures = create_training_plots(metrics_history, baseline_mae, loss_plot_options=loss_plot_options)
 
             for plot_name, fig in figures.items():
@@ -746,6 +793,8 @@ def train_model_with_config(
                     tile_size,
                     iou_threshold,
                     best_tile_loss_so_far,
+                    target_mode=target_mode,
+                    binary_threshold=binary_threshold,
                 )
                 mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                 if loss_plot_path is not None:
@@ -763,6 +812,8 @@ def train_model_with_config(
                     tile_size,
                     iou_threshold,
                     best_iou_so_far,
+                    target_mode=target_mode,
+                    binary_threshold=binary_threshold,
                 )
                 mlflow.log_figure(fig, "plots/best_iou_tile.png")
                 if loss_plot_path is not None:
@@ -790,6 +841,8 @@ def train_model_with_config(
                     device,
                     iou_threshold=iou_threshold,
                     tile_size=tile_size,
+                    target_mode=target_mode,
+                    binary_threshold=binary_threshold,
                 )
                 for tid, fig in pred_figures.items():
                     mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")

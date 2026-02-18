@@ -36,6 +36,17 @@ def _read_param(params_dir: Path, key: str) -> str | None:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _format_param_display(val: str | None) -> str:
+    if val is None:
+        return "?"
+    try:
+        f = float(val)
+        s = f"{f:.10f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+    except (ValueError, TypeError):
+        return val
+
+
 def _build_config_summary(params_dir: Path) -> str:
     keys = [
         "model.architecture",
@@ -45,6 +56,7 @@ def _build_config_summary(params_dir: Path) -> str:
         "model.encoder.freeze_encoder",
         "model.encoder.unfreeze_after_epoch",
         "model.decoder_dropout",
+        "model.output_activation",
         "training.batch_size",
         "training.num_epochs",
         "training.learning_rate",
@@ -52,10 +64,13 @@ def _build_config_summary(params_dir: Path) -> str:
         "data.tile_size",
         "data.train_split",
     ]
+    numeric_keys = {"dropout", "decoder_dropout", "batch_size", "num_epochs", "learning_rate", "tile_size", "train_split"}
     parts = []
     for k in keys:
         v = _read_param(params_dir, k)
         short = k.split(".")[-1] if "." in k else k
+        if short in numeric_keys and v is not None:
+            v = _format_param_display(v)
         parts.append(f"{short}={v}" if v is not None else f"{short}=?")
     return " | ".join(parts)
 
@@ -92,6 +107,12 @@ def main():
         type=Path,
         default=None,
         help="Output path for loss.png (default: run artifacts/plots/loss_regenerated.png)",
+    )
+    parser.add_argument(
+        "--intention",
+        type=str,
+        default=None,
+        help="Run intention (subtitle and info box, e.g. 'changed lr to 1e-7, sigmoid')",
     )
     args = parser.parse_args()
 
@@ -146,6 +167,7 @@ def main():
         num_val_tiles=num_val_tiles,
         freeze_encoder=freeze_encoder,
         unfreeze_after_epoch=unfreeze_after_epoch,
+        run_intention=args.intention,
     )
 
     out_path = args.output

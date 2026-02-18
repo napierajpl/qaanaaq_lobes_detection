@@ -4,11 +4,25 @@ MLflow utilities for experiment tracking.
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlflow
 import mlflow.pytorch
 import torch.nn as nn
+
+# Short display names for config keys in intention suggestion
+_PARAM_DISPLAY_NAMES = {
+    "learning_rate": "lr",
+    "loss_function": "loss",
+    "num_epochs": "ep",
+    "batch_size": "batch",
+    "freeze_encoder": "freeze",
+    "unfreeze_after_epoch": "unfreeze_ep",
+    "train_split": "train_split",
+    "tile_size": "tile",
+    "output_activation": "out_act",
+    "architecture": "arch",
+}
 
 
 def setup_mlflow_experiment(experiment_name: str, tracking_uri: Optional[str] = None) -> None:
@@ -44,6 +58,56 @@ def log_training_config(config: Dict[str, Any]) -> None:
 
     flatten_dict(config)
     mlflow.log_params(params)
+
+
+def _short_param_key(key: str) -> str:
+    short = key.split(".")[-1] if "." in key else key
+    return _PARAM_DISPLAY_NAMES.get(short, short)
+
+
+def get_intention_suggestion(experiment_id: str, current_run_id: str) -> str:
+    """
+    Compare current run params with the most recent other run in the experiment.
+    Returns a one-line suggestion of what changed (e.g. "lr 1e-6→1e-7, loss mse→bce").
+    """
+    client = mlflow.MlflowClient()
+    try:
+        current_run = client.get_run(current_run_id)
+        current_params = current_run.data.params or {}
+    except Exception:
+        return ""
+
+    runs = client.search_runs(
+        experiment_ids=[experiment_id],
+        order_by=["attributes.end_time DESC"],
+        max_results=20,
+    )
+    prev_run_id = None
+    for r in runs:
+        if r.info.run_id != current_run_id and r.info.end_time is not None:
+            prev_run_id = r.info.run_id
+            break
+    if not prev_run_id:
+        return "No previous run to compare."
+
+    try:
+        prev_run = client.get_run(prev_run_id)
+        prev_params = prev_run.data.params or {}
+    except Exception:
+        return ""
+
+    diffs: List[str] = []
+    all_keys = sorted(set(current_params.keys()) | set(prev_params.keys()))
+    for key in all_keys:
+        cur = current_params.get(key)
+        prev = prev_params.get(key)
+        if cur is None or prev is None or cur != prev:
+            if cur != prev:
+                display = _short_param_key(key)
+                diffs.append(f"{display} {prev}->{cur}")
+    if not diffs:
+        return "No changes vs last run."
+    return "Changes vs last run: " + ", ".join(diffs)
 
 
 def _get_directory_size(directory: Path) -> int:

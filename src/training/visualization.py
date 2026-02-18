@@ -154,6 +154,9 @@ def plot_loss(
     num_val_tiles: Optional[int] = None,
     freeze_encoder: Optional[bool] = None,
     unfreeze_after_epoch: Optional[int] = None,
+    training_start_datetime: Optional[str] = None,
+    training_duration_seconds: Optional[float] = None,
+    run_intention: Optional[str] = None,
 ) -> plt.Figure:
     """
     Plot training and validation loss across epochs.
@@ -178,7 +181,10 @@ def plot_loss(
 
     ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Loss', fontsize=12)
-    ax.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
+    title = 'Training and Validation Loss'
+    if run_intention:
+        title += '\n' + run_intention
+    ax.set_title(title, fontsize=14, fontweight='bold')
     x_lo, x_hi = _xlim_epochs(epochs)
     ax.set_xlim(left=x_lo, right=x_hi)
 
@@ -206,6 +212,13 @@ def plot_loss(
         if num_val_tiles is not None:
             tiles += f" val={num_val_tiles}"
         info_lines.append(tiles)
+
+    if training_start_datetime:
+        info_lines.append(f"started: {training_start_datetime}")
+    if training_duration_seconds is not None and training_duration_seconds >= 0:
+        h = int(training_duration_seconds // 3600)
+        m = int((training_duration_seconds % 3600) // 60)
+        info_lines.append(f"duration: {h}h {m}m")
 
     # Wrap long lines so config text never stretches the figure when saving
     wrapped_lines = []
@@ -378,6 +391,9 @@ def create_training_plots(
             num_val_tiles=opts.get('num_val_tiles'),
             freeze_encoder=opts.get('freeze_encoder'),
             unfreeze_after_epoch=opts.get('unfreeze_after_epoch'),
+            training_start_datetime=opts.get('training_start_datetime'),
+            training_duration_seconds=opts.get('training_duration_seconds'),
+            run_intention=opts.get('run_intention'),
         )
         figures['loss'] = fig
         if output_dir:
@@ -456,9 +472,10 @@ def _add_proximity_scale_and_extrema(
     data: np.ndarray,
     vmin: float = 0.0,
     vmax: float = 20.0,
+    colorbar_label: str = "proximity",
 ) -> None:
     im = ax.imshow(data, vmin=vmin, vmax=vmax, cmap="viridis")
-    plt.colorbar(im, ax=ax, shrink=0.7, label="proximity")
+    plt.colorbar(im, ax=ax, shrink=0.7, label=colorbar_label)
     flat = np.nan_to_num(data, nan=np.nanmean(data)).ravel()
     if flat.size == 0:
         return
@@ -484,6 +501,8 @@ def _create_tile_prediction_figure(
     tile_size: int,
     iou_threshold: float,
     title: str,
+    target_mode: str = "proximity",
+    binary_threshold: float = 1.0,
 ) -> plt.Figure:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -496,12 +515,15 @@ def _create_tile_prediction_figure(
             if h == w:
                 tile_size = int(h)
     model.eval()
+    mode = (target_mode or "proximity").lower()
     dataset = TileDataset(
         rep_tiles,
         Path(features_dir),
         Path(targets_dir),
         normalization_stats,
         tile_size=tile_size,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
     )
     features, target = dataset[0]
     features_batch = features.unsqueeze(0).to(device)
@@ -517,16 +539,23 @@ def _create_tile_prediction_figure(
     fp = tile_info.get("features_path", "")
     rgb = _load_rgb_for_display(Path(fp.replace("\\", "/")), Path(features_dir))
     tid = tile_info.get("tile_id", "tile_0")
-    vmin, vmax = 0.0, 20.0
+    if mode == "binary":
+        vmin, vmax = 0.0, 1.0
+        colorbar_label = "lobe (0-1)"
+        target_title = "Target (0/1)"
+    else:
+        vmin, vmax = 0.0, 20.0
+        colorbar_label = "proximity"
+        target_title = "Proximity (target)"
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
     axes[0].imshow(rgb)
     axes[0].set_title("RGB")
     axes[0].axis("off")
-    axes[1].set_title("Proximity (target)")
-    _add_proximity_scale_and_extrema(axes[1], target_np, vmin, vmax)
+    axes[1].set_title(target_title)
+    _add_proximity_scale_and_extrema(axes[1], target_np, vmin, vmax, colorbar_label)
     axes[1].axis("off")
     axes[2].set_title("Prediction")
-    _add_proximity_scale_and_extrema(axes[2], pred_np, vmin, vmax)
+    _add_proximity_scale_and_extrema(axes[2], pred_np, vmin, vmax, colorbar_label)
     axes[2].axis("off")
     fig.suptitle(
         f"{title}: {tid}  |  MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}",
@@ -546,35 +575,9 @@ def show_best_predicted_tile(
     tile_size: int,
     iou_threshold: float,
     loss_value: float,
+    target_mode: str = "proximity",
+    binary_threshold: float = 1.0,
 ) -> plt.Figure:
-    from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
-
-    rep_tiles = [tile_info]
-    first_path = Path(features_dir) / tile_info.get("features_path", "").replace("\\", "/")
-    if first_path.exists():
-        with rasterio.open(first_path) as src:
-            h, w = src.height, src.width
-            if h == w:
-                tile_size = int(h)
-    from src.training.dataloader import TileDataset
-
-    model.eval()
-    dataset = TileDataset(
-        rep_tiles,
-        Path(features_dir),
-        Path(targets_dir),
-        normalization_stats,
-        tile_size=tile_size,
-    )
-    features, target = dataset[0]
-    features_batch = features.unsqueeze(0).to(device)
-    with torch.no_grad():
-        pred = model(features_batch)
-    pred_cpu = pred.squeeze(0).cpu()
-    target_cpu = target.unsqueeze(0)
-    mae = compute_mae(pred_cpu, target_cpu)
-    rmse = compute_rmse(pred_cpu, target_cpu)
-    iou = compute_iou(pred_cpu, target_cpu, threshold=iou_threshold)
     title = f"Lowest-loss tile  |  loss: {loss_value:.6f}"
     return _create_tile_prediction_figure(
         model,
@@ -586,6 +589,8 @@ def show_best_predicted_tile(
         tile_size,
         iou_threshold,
         title,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
     )
 
 
@@ -599,6 +604,8 @@ def show_highest_iou_tile(
     tile_size: int,
     iou_threshold: float,
     iou_value: float,
+    target_mode: str = "proximity",
+    binary_threshold: float = 1.0,
 ) -> plt.Figure:
     title = f"Highest IoU tile  |  IoU: {iou_value:.4f}"
     return _create_tile_prediction_figure(
@@ -611,6 +618,8 @@ def show_highest_iou_tile(
         tile_size,
         iou_threshold,
         title,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
     )
 
 
@@ -623,6 +632,8 @@ def create_prediction_tile_figures(
     device: torch.device,
     iou_threshold: float = 5.0,
     tile_size: int = 256,
+    target_mode: str = "proximity",
+    binary_threshold: float = 1.0,
 ) -> Dict[str, plt.Figure]:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -635,12 +646,21 @@ def create_prediction_tile_figures(
                 if h == w:
                     tile_size = int(h)
     model.eval()
+    mode = (target_mode or "proximity").lower()
+    if mode == "binary":
+        vmin, vmax = 0.0, 1.0
+        target_title = "Target (0/1)"
+    else:
+        vmin, vmax = 0.0, 20.0
+        target_title = "Proximity (target)"
     dataset = TileDataset(
         rep_tiles,
         features_dir,
         targets_dir,
         normalization_stats,
         tile_size=tile_size,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
     )
     figures = {}
     for i, tile_info in enumerate(rep_tiles):
@@ -663,9 +683,8 @@ def create_prediction_tile_figures(
         axes[0].imshow(rgb)
         axes[0].set_title("RGB")
         axes[0].axis("off")
-        vmin, vmax = 0.0, 20.0
         axes[1].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
-        axes[1].set_title("Proximity (target)")
+        axes[1].set_title(target_title)
         axes[1].axis("off")
         axes[2].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
         axes[2].set_title("Prediction")
