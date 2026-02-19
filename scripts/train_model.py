@@ -44,7 +44,14 @@ from src.training.visualization import (
     show_highest_iou_tile,
 )
 from src.preprocessing.normalization import compute_statistics
-from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics, get_intention_suggestion
+from src.utils.mlflow_utils import (
+    setup_mlflow_experiment,
+    log_training_config,
+    save_model,
+    log_metrics,
+    get_intention_suggestion,
+    build_user_friendly_run_id,
+)
 from src.utils.path_utils import get_project_root, resolve_path
 from src.utils.config_utils import (
     apply_best_hyperparameters,
@@ -279,7 +286,7 @@ def train_model_with_config(
     setup_mlflow_experiment(mlflow_config["experiment_name"], mlflow_config.get("tracking_uri"))
 
     if run_name is None:
-        run_name = f"unet_baseline_{mode}"
+        run_name = build_user_friendly_run_id(config, trial=trial)
 
     with mlflow.start_run(run_name=run_name):
         loss_plot_path = None  # set when file: tracking so we can write loss.png each epoch
