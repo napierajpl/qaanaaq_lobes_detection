@@ -101,6 +101,11 @@ Reference: `docs/literature/bibliography_deep_dive_30min.md` §1.4, §1.5, §9.
 
 ### Data
 
+13. **Stone-stripe / slope-aligned texture hint channel(s)**
+   - **Why**: Lobes occur where stones form stripes; non-lobe areas are finer-grained. Stripes are directional — perpendicular to lobe front and **follow slope direction**. A mechanism that detects “stripes following slope” and exposes it (e.g. as an input channel or visualization) could give the CNN a strong hint for lobe vs non-lobe.
+   - **What**: Detect stripes that follow slope direction and surface them. Options: (1) Structure-tensor from RGB → coherence (stripiness) + dominant orientation; aspect from DEM (slope direction); one or more channels: e.g. “slope–texture alignment” (high where local texture direction matches aspect). (2) Precomputed raster(s) tiled like segmentation, or on-the-fly in the dataloader from RGB + DEM. (3) Optional: visualization/QC layer (e.g. slope-aligned stripe strength) to inspect where the detector fires.
+   - **Status**: Not implemented
+   - **Reference**: User request (stripes following slope; mechanism to detect and show). See also `docs/plan_synthetic_parenthesis_and_multiscale.md` §3 (boundary/segmentation as input hints).
 
 14. **Class-Balanced Sampling**
    - **Why**: Most batches are mostly background, model sees few lobe examples
@@ -205,6 +210,7 @@ Implemented items (dropout, gradient clipping, LR scheduling, early stopping, pe
 | 8 | 7 | 3 | 4 | **Learning Rate Adjustments** — Lower LR or better schedule; config + scheduler. |
 | 8 | 7 | 3 | 4 | **Data Augmentation** — Flips, rotations, photometric; care with DEM. |
 | 8 | 7 | 3 | 4 | **Class-Balanced Sampling** — Oversample lobe-rich tiles; sampler change. |
+| 8 | 7 | 4 | 3 | **Stone-stripe / slope-aligned texture channel** — Detect stripes following slope (structure tensor + aspect); add as input channel or QC layer. |
 | 8 | 7 | 4 | 3 | **Background tiles + augment lobe tiles only** — 4× background tiles, 4× augmentation for lobe tiles only; slope becomes useful. |
 | 8 | 7 | 3 | 4 | **Post-processing (small-object/hole removal)** — Morphology at inference; no training change. |
 | 8 | 7 | 2 | 5 | **Increase Encouragement Weight** — Change one constant (e.g. 50 or 100). |
