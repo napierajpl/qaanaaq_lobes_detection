@@ -1,3 +1,6 @@
+# Target mode: "proximity" (0-20 regression) | "binary" (0/1 lobe vs background). Default proximity.
+# target_mode: "proximity"
+
 model:
   # Architecture options:
   #   - "unet": Baseline U-Net without pretrained encoder
@@ -31,7 +34,7 @@ model:
 training:
   batch_size: 32
   num_epochs: 300  # Increased from 50 - U-Net typically needs 100+ epochs
-  learning_rate: 0.05  
+  learning_rate: 0.05
   optimizer: "Adam"
   # Loss function options:
   #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
@@ -94,6 +97,8 @@ data:
   # Subsampling: use a random subset of train tiles each epoch (0.0–1.0). Reduces time per epoch and can reduce overtraining.
   # 1.0 = use all tiles; e.g. 0.3 = 30% of tiles per epoch, different random subset each epoch.
   train_subsample_ratio: 0.3
+  # Optional 6th input channel: segmentation layer (CNN boundary hint). Requires tiled segmentation dir in paths.
+  use_segmentation_layer: false
 
 # Representative tiles for post-training prediction visualization (logged to MLflow).
 # List tile indices (int) and/or tile_id strings (e.g. "tile_01234"). Empty list = skip.
@@ -140,6 +145,7 @@ paths:
     features_dir: "data/processed/tiles/train_512/features"
     targets_dir: "data/processed/tiles/train_512/targets"
     models_dir: "data/models/production"
+    # segmentation_dir: "data/processed/tiles/train_512/segmentation"  # optional; use with data.use_segmentation_layer: true
 
   # Synthetic parenthesis (sanity-check, 512x512 only): separate from dev/production. Generate with:
   #   poetry run python scripts/generate_synthetic_parenthesis_dataset.py

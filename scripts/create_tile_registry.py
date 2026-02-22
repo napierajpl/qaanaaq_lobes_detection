@@ -79,6 +79,12 @@ def main():
         default=0.3,
         help="Overlap ratio used when creating tiles (default: 0.3).",
     )
+    parser.add_argument(
+        "--boundary",
+        type=Path,
+        default=None,
+        help="Research boundary vector (e.g. data/raw/vector/research_boundary.shp). Adds inside_boundary to each tile.",
+    )
 
     args = parser.parse_args()
 
@@ -116,6 +122,11 @@ def main():
         tile_size=args.tile_size,
         overlap=args.overlap,
     )
+
+    if args.boundary:
+        boundary_path = resolve_path(args.boundary, project_root)
+        registry.add_boundary_info(boundary_path)
+        registry.save()
 
     logger.info(f"Tile registry created successfully: {registry_path}")
     logger.info(f"Total tiles in registry: {len(registry.registry['tiles'])}")

@@ -1,0 +1,38 @@
+# Data preparation: extended training set (background + augmented lobe tiles).
+# Used by: scripts/prepare_extended_training_set.py
+# Run: poetry run python scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml#
+# 256 and 512 need separate runs (different tile grids and filtered_tiles.json).
+# Set tile_size to choose which paths to use; default is 256.
+
+tile_size: 512  # 256 or 512. Augmentation is per tile size.
+
+paths_256:
+  filtered_tiles: "data/processed/tiles/train/filtered_tiles.json"
+  features_dir: "data/processed/tiles/train/features"
+  targets_dir: "data/processed/tiles/train/targets"
+  output_json: null  # null = same dir as filtered_tiles, file extended_training_tiles.json
+
+paths_512:
+  filtered_tiles: "data/processed/tiles/train_512/filtered_tiles.json"
+  features_dir: "data/processed/tiles/train_512/features"
+  targets_dir: "data/processed/tiles/train_512/targets"
+  output_json: null
+
+splits:
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+
+# Background tiles: ratio to (original lobe train + augmented lobe).
+# 1.0 = 1:1 (same number of background as lobe+augmented). 2.0 = twice as many background.
+background:
+  ratio: 1.0
+  white_threshold: 0.6  # exclude candidates with >= this fraction of white pixels
+
+# Augmentation: which lobe tiles to augment and how.
+augmentation:
+  n_lobe_tiles_to_augment: null  # null = all train lobe tiles; or int to cap (e.g. 500)
+  rotations: 4  # 0°, 90°, 180°, 270° per tile
+  contrast_range: [0.8, 1.2]
+  saturation_range: [0.8, 1.2]

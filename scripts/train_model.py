@@ -40,18 +40,12 @@ from src.training.visualization import (
     get_representative_tile_ids_for_viz,
     resolve_representative_tiles,
     create_prediction_tile_figures,
+    create_representative_tiles_channel_figures,
     show_best_predicted_tile,
     show_highest_iou_tile,
 )
 from src.preprocessing.normalization import compute_statistics
-from src.utils.mlflow_utils import (
-    setup_mlflow_experiment,
-    log_training_config,
-    save_model,
-    log_metrics,
-    get_intention_suggestion,
-    build_user_friendly_run_id,
-)
+from src.utils.mlflow_utils import setup_mlflow_experiment, log_training_config, save_model, log_metrics, get_intention_suggestion
 from src.utils.path_utils import get_project_root, resolve_path
 from src.utils.config_utils import (
     apply_best_hyperparameters,
@@ -88,6 +82,7 @@ def train_model_with_config(
     trial: Optional[object] = None,
     run_name: Optional[str] = None,
     applied_best_hparams: Optional[dict] = None,
+    max_tiles: Optional[int] = None,
 ) -> float:
     """
     Train model with given configuration.
@@ -119,6 +114,10 @@ def train_model_with_config(
     features_dir = resolve_path(Path(paths["features_dir"]), project_root)
     targets_dir = resolve_path(Path(paths["targets_dir"]), project_root)
     models_dir = resolve_path(Path(paths["models_dir"]), project_root)
+    use_segmentation_layer = config["data"].get("use_segmentation_layer", False)
+    segmentation_dir = None
+    if use_segmentation_layer and paths.get("segmentation_dir"):
+        segmentation_dir = resolve_path(Path(paths["segmentation_dir"]), project_root)
 
     logger.info("=== Training Configuration ===")
     logger.info(f"Mode: {mode} (tile size: {tile_size}x{tile_size}), target_mode: {target_mode}")
@@ -126,11 +125,39 @@ def train_model_with_config(
     logger.info(f"Features dir: {features_dir}")
     logger.info(f"Targets dir: {targets_dir}")
     logger.info(f"Models dir: {models_dir}")
+    if use_segmentation_layer:
+        if not segmentation_dir or not segmentation_dir.exists():
+            raise ValueError(
+                "use_segmentation_layer is true but segmentation_dir is missing or does not exist. "
+                "Add paths.<key>.segmentation_dir and tile the segmentation raster with the same tile size/overlap."
+            )
+        logger.info(f"Segmentation dir: {segmentation_dir}")
 
     # Load filtered tiles
     logger.info("Loading filtered tiles...")
     all_tiles = load_filtered_tiles(filtered_tiles_path)
-    logger.info(f"Total tiles: {len(all_tiles)}")
+    if max_tiles is not None:
+        viz_config = config.get("visualization", {})
+        rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, path_key, tile_size)
+        rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids) if rep_tile_ids else []
+        rep_ids_set = {t.get("tile_id") for t in rep_tiles if t.get("tile_id")}
+        remaining = [t for t in all_tiles if t.get("tile_id") not in rep_ids_set]
+        n_rep = len(rep_tiles)
+        n_remaining = max(0, max_tiles - n_rep)
+        rng = np.random.default_rng(42)
+        if n_remaining > 0 and remaining:
+            n_take = min(n_remaining, len(remaining))
+            indices = rng.choice(len(remaining), size=n_take, replace=False)
+            sampled = [remaining[i] for i in indices]
+            all_tiles = rep_tiles + sampled
+        else:
+            all_tiles = rep_tiles if rep_tiles else all_tiles[:max_tiles]
+        logger.info(
+            f"Capped to {max_tiles} tiles (included {n_rep} representative, "
+            f"+ {len(all_tiles) - n_rep} random; total: {len(all_tiles)})"
+        )
+    else:
+        logger.info(f"Total tiles: {len(all_tiles)}")
 
     # Split into train/val/test
     train_split = config["data"]["train_split"]
@@ -207,6 +234,7 @@ def train_model_with_config(
         tile_size=tile_size,
         target_mode=target_mode,
         binary_threshold=binary_threshold,
+        segmentation_base_dir=segmentation_dir,
     )
 
     # Setup device
@@ -216,6 +244,8 @@ def train_model_with_config(
     # Create model using factory (binary mode: output [0,1] via sigmoid)
     logger.info("Creating model...")
     model_config = dict(config["model"])
+    if use_segmentation_layer:
+        model_config["in_channels"] = 6
     if target_mode == "binary":
         model_config["proximity_max"] = 1
         model_config["output_activation"] = "sigmoid"
@@ -286,7 +316,7 @@ def train_model_with_config(
     setup_mlflow_experiment(mlflow_config["experiment_name"], mlflow_config.get("tracking_uri"))
 
     if run_name is None:
-        run_name = build_user_friendly_run_id(config, trial=trial)
+        run_name = f"unet_baseline_{mode}"
 
     with mlflow.start_run(run_name=run_name):
         loss_plot_path = None  # set when file: tracking so we can write loss.png each epoch
@@ -368,7 +398,7 @@ def train_model_with_config(
                 trial.set_user_attr("mlflow_tracking_uri", mlflow.get_tracking_uri())
                 trial.set_user_attr("mode", mode)
                 trial.set_user_attr("model_architecture", architecture)
-                trial.set_user_attr("model_in_channels", int(config["model"].get("in_channels", 5)))
+                trial.set_user_attr("model_in_channels", 6 if use_segmentation_layer else int(config["model"].get("in_channels", 5)))
                 trial.set_user_attr("model_out_channels", int(config["model"].get("out_channels", 1)))
                 trial.set_user_attr("training_iou_threshold", float(iou_threshold))
                 trial.set_user_attr("data_normalize_rgb", bool(config["data"].get("normalize_rgb", True)))
@@ -407,7 +437,12 @@ def train_model_with_config(
         best_tile_info_so_far = None
         best_iou_so_far = -1.0
         best_iou_tile_info_so_far = None
+        best_iou_tile_loss_so_far = None
         last_epoch_saved = None
+        last_drawn_best_tile_id = None
+        last_drawn_best_tile_loss = None
+        last_drawn_best_iou_tile_id = None
+        last_drawn_best_iou = None
         SAVE_THROTTLE_EPOCHS = 10
 
         # Track metrics across epochs for visualization
@@ -511,6 +546,7 @@ def train_model_with_config(
                     tile_size=tile_size,
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
+                    segmentation_base_dir=segmentation_dir,
                 )
 
             # Unfreeze encoder if specified epoch reached
@@ -625,10 +661,15 @@ def train_model_with_config(
                         best_tile_loss_so_far,
                     )
             if trial is None and best_iou_tile_result is not None:
-                tile_info, tile_iou = best_iou_tile_result
+                if len(best_iou_tile_result) == 3:
+                    tile_info, tile_iou, tile_loss = best_iou_tile_result
+                else:
+                    tile_info, tile_iou = best_iou_tile_result
+                    tile_loss = None
                 if tile_iou > best_iou_so_far:
                     best_iou_so_far = tile_iou
                     best_iou_tile_info_so_far = tile_info
+                    best_iou_tile_loss_so_far = tile_loss
                     logger.info(
                         "New highest IoU tile: %s IoU=%.4f",
                         best_iou_tile_info_so_far.get("tile_id", "?"),
@@ -652,43 +693,54 @@ def train_model_with_config(
                     logger.info(f"New best model saved! val_loss: {best_val_loss:.4f} | "
                               f"val_mae: {best_val_mae:.4f} | val_iou: {best_val_iou:.4f}")
                     if trial is None and best_tile_info_so_far is not None:
-                        logger.info("Creating best predicted tile figure")
-                        fig = show_best_predicted_tile(
-                            model,
-                            best_tile_info_so_far,
-                            features_dir,
-                            targets_dir,
-                            normalization_stats,
-                            device,
-                            tile_size,
-                            iou_threshold,
-                            best_tile_loss_so_far,
-                            target_mode=target_mode,
-                            binary_threshold=binary_threshold,
-                        )
-                        mlflow.log_figure(fig, "plots/best_predicted_tile.png")
-                        if loss_plot_path is not None:
-                            fig.savefig(loss_plot_path.parent / "best_predicted_tile.png", dpi=150, bbox_inches="tight")
-                        plt.close(fig)
+                        bid = best_tile_info_so_far.get("tile_id")
+                        if bid != last_drawn_best_tile_id or best_tile_loss_so_far != last_drawn_best_tile_loss:
+                            logger.info("Creating best predicted tile figure")
+                            fig = show_best_predicted_tile(
+                                model,
+                                best_tile_info_so_far,
+                                features_dir,
+                                targets_dir,
+                                normalization_stats,
+                                device,
+                                tile_size,
+                                iou_threshold,
+                                best_tile_loss_so_far,
+                                target_mode=target_mode,
+                                binary_threshold=binary_threshold,
+                                segmentation_base_dir=segmentation_dir,
+                            )
+                            mlflow.log_figure(fig, "plots/best_predicted_tile.png")
+                            if loss_plot_path is not None:
+                                fig.savefig(loss_plot_path.parent / "best_predicted_tile.png", dpi=150, bbox_inches="tight")
+                            plt.close(fig)
+                            last_drawn_best_tile_id = bid
+                            last_drawn_best_tile_loss = best_tile_loss_so_far
                     if trial is None and best_iou_tile_info_so_far is not None:
-                        logger.info("Creating best IoU tile figure")
-                        fig = show_highest_iou_tile(
-                            model,
-                            best_iou_tile_info_so_far,
-                            features_dir,
-                            targets_dir,
-                            normalization_stats,
-                            device,
-                            tile_size,
-                            iou_threshold,
-                            best_iou_so_far,
-                            target_mode=target_mode,
-                            binary_threshold=binary_threshold,
-                        )
-                        mlflow.log_figure(fig, "plots/best_iou_tile.png")
-                        if loss_plot_path is not None:
-                            fig.savefig(loss_plot_path.parent / "best_iou_tile.png", dpi=150, bbox_inches="tight")
-                        plt.close(fig)
+                        iid = best_iou_tile_info_so_far.get("tile_id")
+                        if iid != last_drawn_best_iou_tile_id or best_iou_so_far != last_drawn_best_iou:
+                            logger.info("Creating best IoU tile figure")
+                            fig = show_highest_iou_tile(
+                                model,
+                                best_iou_tile_info_so_far,
+                                features_dir,
+                                targets_dir,
+                                normalization_stats,
+                                device,
+                                tile_size,
+                                iou_threshold,
+                                best_iou_so_far,
+                                target_mode=target_mode,
+                                binary_threshold=binary_threshold,
+                                segmentation_base_dir=segmentation_dir,
+                                tile_loss=best_iou_tile_loss_so_far,
+                            )
+                            mlflow.log_figure(fig, "plots/best_iou_tile.png")
+                            if loss_plot_path is not None:
+                                fig.savefig(loss_plot_path.parent / "best_iou_tile.png", dpi=150, bbox_inches="tight")
+                            plt.close(fig)
+                            last_drawn_best_iou_tile_id = iid
+                            last_drawn_best_iou = best_iou_so_far
                     last_epoch_saved = epoch
                 print(
                     f"[BEST] epoch={epoch} val_loss={best_val_loss:.6f} "
@@ -802,6 +854,7 @@ def train_model_with_config(
                     best_tile_loss_so_far,
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
+                    segmentation_base_dir=segmentation_dir,
                 )
                 mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                 if loss_plot_path is not None:
@@ -821,6 +874,8 @@ def train_model_with_config(
                     best_iou_so_far,
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
+                    segmentation_base_dir=segmentation_dir,
+                    tile_loss=best_iou_tile_loss_so_far,
                 )
                 mlflow.log_figure(fig, "plots/best_iou_tile.png")
                 if loss_plot_path is not None:
@@ -828,7 +883,7 @@ def train_model_with_config(
                 plt.close(fig)
 
             viz_config = config.get("visualization", {})
-            rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, mode, tile_size)
+            rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, path_key, tile_size)
             rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids) if rep_tile_ids else []
             fallback_n = int(viz_config.get("prediction_tiles_fallback_n", 0))
             if not rep_tiles and fallback_n > 0 and all_tiles:
@@ -850,11 +905,31 @@ def train_model_with_config(
                     tile_size=tile_size,
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
+                    segmentation_base_dir=segmentation_dir,
                 )
                 for tid, fig in pred_figures.items():
                     mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
                     plt.close(fig)
                     logger.info(f"Logged prediction tile: {tid}")
+                logger.info("=== Creating representative tiles channel visualizations ===")
+                channel_figures = create_representative_tiles_channel_figures(
+                    model,
+                    rep_tiles,
+                    features_dir,
+                    targets_dir,
+                    normalization_stats,
+                    device,
+                    iou_threshold=iou_threshold,
+                    tile_size=tile_size,
+                    target_mode=target_mode,
+                    binary_threshold=binary_threshold,
+                    segmentation_base_dir=segmentation_dir,
+                    plot_options=loss_plot_options,
+                )
+                for tid, fig in channel_figures.items():
+                    mlflow.log_figure(fig, f"representative_channels/{tid}.png")
+                    plt.close(fig)
+                    logger.info(f"Logged representative channels: {tid}")
             elif rep_tile_ids:
                 logger.warning(
                     "representative_tile_ids configured but no matching tiles found and fallback_n=0; "
@@ -953,6 +1028,13 @@ def main():
         metavar="RUN_ID",
         help="Apply hyperparameters from an MLflow run ID (e.g. from MLflow UI).",
     )
+    parser.add_argument(
+        "--max-tiles",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Max tiles to use in total (before train/val/test split). Use for quick runs.",
+    )
 
     args = parser.parse_args()
 
@@ -1001,6 +1083,7 @@ def main():
         trial=None,  # Not using Optuna
         run_name=args.run_name,
         applied_best_hparams=applied_best_hparams,
+        max_tiles=args.max_tiles,
     )
 
 

@@ -29,13 +29,13 @@ class InputAdapter(nn.Module):
         Initialize input adapter.
 
         Args:
-            in_channels: Number of input channels (default: 5 for RGB+DEM+Slope)
+            in_channels: Number of input channels (5 = RGB+DEM+Slope, 6 = +segmentation)
             out_channels: Number of output channels (default: 3 for RGB)
         """
         super().__init__()
-        # Process RGB and DEM+Slope separately, then fuse
+        aux_channels = in_channels - 3  # non-RGB: 2 (DEM+Slope) or 3 (+segmentation)
         self.rgb_conv = nn.Conv2d(3, 3, kernel_size=1)
-        self.dem_slope_conv = nn.Conv2d(2, 3, kernel_size=1)
+        self.dem_slope_conv = nn.Conv2d(aux_channels, 3, kernel_size=1)
         self.fusion = nn.Conv2d(6, out_channels, kernel_size=1)
         self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
@@ -50,9 +50,9 @@ class InputAdapter(nn.Module):
         Returns:
             Adapted tensor [B, 3, H, W]
         """
-        # Split into RGB and DEM+Slope
-        rgb = x[:, :3, :, :]  # First 3 channels (RGB)
-        dem_slope = x[:, 3:, :, :]  # Last 2 channels (DEM + Slope)
+        # Split into RGB and auxiliary (DEM + Slope [+ optional segmentation])
+        rgb = x[:, :3, :, :]
+        dem_slope = x[:, 3:, :, :]
 
         # Process separately
         rgb_features = self.rgb_conv(rgb)

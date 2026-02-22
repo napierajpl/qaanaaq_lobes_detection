@@ -96,6 +96,15 @@ def _create_acl(config: Dict[str, Any]) -> nn.Module:
     )
 
 
+def _create_bce(config: Dict[str, Any]) -> nn.Module:
+    from src.models.losses import BCEWithLabelSmoothing
+    smoothing = config.get("bce_label_smoothing") or 0.0
+    smoothing = float(smoothing)
+    if smoothing <= 0:
+        return nn.BCELoss()
+    return BCEWithLabelSmoothing(smoothing=smoothing)
+
+
 _LOSS_REGISTRY: Dict[str, Any] = {
     "smooth_l1": _create_smooth_l1,
     "weighted_smooth_l1": _create_weighted_smooth_l1,
@@ -106,15 +115,20 @@ _LOSS_REGISTRY: Dict[str, Any] = {
     "focal": _create_focal,
     "combined": _create_combined,
     "acl": _create_acl,
+    "bce": _create_bce,
 }
 
 
-def create_criterion(training_config: Dict[str, Any]) -> nn.Module:
+def create_criterion(
+    training_config: Dict[str, Any],
+    target_mode: str = "proximity",
+) -> nn.Module:
     """
     Create loss criterion from training config.
 
     Args:
         training_config: config["training"] (must contain "loss_function")
+        target_mode: "proximity" | "binary". For binary, dice uses threshold 0.5.
 
     Returns:
         Initialized loss module
@@ -130,7 +144,12 @@ def create_criterion(training_config: Dict[str, Any]) -> nn.Module:
         raise ValueError(
             f"Unknown loss function: {name}. Supported: {list(_LOSS_REGISTRY.keys())}"
         )
-    criterion = _LOSS_REGISTRY[name](training_config)
+    mode = (target_mode or "proximity").lower()
+    if mode == "binary" and name == "dice":
+        config_override = {**training_config, "iou_threshold": 0.5}
+        criterion = _LOSS_REGISTRY[name](config_override)
+    else:
+        criterion = _LOSS_REGISTRY[name](training_config)
     logger.info("Using %s", _criterion_description(name, training_config))
     return criterion
 
@@ -172,4 +191,9 @@ def _criterion_description(name: str, config: Dict[str, Any]) -> str:
             f"ACLLoss(acl_lambda={config.get('acl_lambda', 0.5)}, threshold={threshold}, "
             f"focal_alpha={config.get('focal_alpha', 0.75)}, focal_gamma={config.get('focal_gamma', 2.0)})"
         )
+    if name == "bce":
+        smooth = config.get("bce_label_smoothing") or 0.0
+        if float(smooth) > 0:
+            return f"BCEWithLabelSmoothing(smoothing={smooth})"
+        return "BCELoss"
     return name

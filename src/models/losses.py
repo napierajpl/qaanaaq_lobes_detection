@@ -6,6 +6,22 @@ import torch
 import torch.nn as nn
 
 
+class BCEWithLabelSmoothing(nn.Module):
+    """BCE with optional label smoothing to reduce overfitting to hard 0/1 targets."""
+
+    def __init__(self, smoothing: float = 0.0):
+        super().__init__()
+        self.smoothing = float(smoothing)
+        self.bce = nn.BCELoss(reduction="mean")
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if self.smoothing <= 0:
+            return self.bce(pred, target)
+        # target_smooth: 1 -> 1 - smoothing, 0 -> smoothing (e.g. 0.1 -> 0.9 and 0.1)
+        target_smooth = target * (1.0 - self.smoothing) + (1.0 - target) * self.smoothing
+        return self.bce(pred, target_smooth)
+
+
 class SmoothL1Loss(nn.Module):
     """Smooth L1 Loss (Huber Loss) for regression."""
 

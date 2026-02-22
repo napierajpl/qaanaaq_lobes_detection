@@ -133,7 +133,7 @@ def validate(
     batch_losses: List[float] = [] if return_batch_losses else []
 
     best_tile_result: Optional[Tuple[dict, float]] = None
-    best_iou_tile_result: Optional[Tuple[dict, float]] = None
+    best_iou_tile_result: Optional[Tuple[dict, float, float]] = None  # (tile_info, iou, loss)
     tile_index = 0
 
     # For baseline comparison - compute aggregate baseline MAE from tile list
@@ -186,7 +186,7 @@ def validate(
                     if best_tile_result is None or sample_loss < best_tile_result[1]:
                         best_tile_result = (val_tile_list[tile_index].copy(), sample_loss)
                     if best_iou_tile_result is None or sample_iou > best_iou_tile_result[1]:
-                        best_iou_tile_result = (val_tile_list[tile_index].copy(), sample_iou)
+                        best_iou_tile_result = (val_tile_list[tile_index].copy(), sample_iou, sample_loss)
                     tile_index += 1
 
             # Collect statistics for diagnostics

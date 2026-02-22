@@ -3,8 +3,6 @@ MLflow utilities for experiment tracking.
 """
 
 import os
-import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,29 +23,6 @@ _PARAM_DISPLAY_NAMES = {
     "output_activation": "out_act",
     "architecture": "arch",
 }
-
-
-def _sanitize_run_id_part(value: str) -> str:
-    """Keep only alphanumeric and underscores for use in run_id (path-safe)."""
-    if not value:
-        return "unknown"
-    s = str(value).lower().strip()
-    s = re.sub(r"[^a-z0-9_\-]", "_", s)
-    return s or "unknown"
-
-
-def build_user_friendly_run_id(config: Dict[str, Any], trial: Optional[Any] = None) -> str:
-    """
-    Build a readable run_id from timestamp, architecture and loss (e.g. 2026-02-18-19-23-45_satlaspretrain_unet_bce).
-    Optional trial appends _t003 for Optuna runs so each trial has a unique id.
-    """
-    ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    arch = _sanitize_run_id_part(config.get("model", {}).get("architecture", "unet"))
-    loss = _sanitize_run_id_part(config.get("training", {}).get("loss_function", "unknown"))
-    parts = [ts, arch, loss]
-    if trial is not None and getattr(trial, "number", None) is not None:
-        parts.append(f"t{trial.number:03d}")
-    return "_".join(parts)
 
 
 def setup_mlflow_experiment(experiment_name: str, tracking_uri: Optional[str] = None) -> None:

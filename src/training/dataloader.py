@@ -193,6 +193,26 @@ def _apply_lobe_augmentation(
     return features, target
 
 
+def _load_and_normalize_segmentation_tile(
+    segmentation_path: Path,
+    tile_size: int,
+    nodata: float = -9999.0,
+) -> np.ndarray:
+    """Load segmentation tile (1 band), replace nodata with 0, scale non-zero to (0, 1]. Shape (1, H, W)."""
+    with rasterio.open(segmentation_path) as src:
+        seg = src.read(1)
+        nd = float(src.nodata if src.nodata is not None else nodata)
+    seg = np.asarray(seg, dtype=np.float32)
+    valid = seg != nd
+    out = np.zeros_like(seg)
+    if np.any(valid):
+        v = seg[valid]
+        v_max = float(np.max(v))
+        if v_max > 0:
+            out[valid] = v / v_max
+    return out[np.newaxis, :, :]
+
+
 class TileDataset(Dataset):
     """Dataset for loading feature and target tiles."""
 
@@ -204,6 +224,9 @@ class TileDataset(Dataset):
         normalization_stats: Optional[dict] = None,
         tile_size: int = 256,
         augmentation_config: Optional[dict] = None,
+        target_mode: str = "proximity",
+        binary_threshold: float = 1.0,
+        segmentation_base_dir: Optional[Path] = None,
     ):
         self.tile_list = tile_list
         self.features_base_dir = Path(features_base_dir)
@@ -211,6 +234,9 @@ class TileDataset(Dataset):
         self.normalization_stats = normalization_stats or {}
         self.tile_size = tile_size
         self.augmentation_config = augmentation_config or {}
+        self.target_mode = (target_mode or "proximity").lower()
+        self.binary_threshold = binary_threshold
+        self.segmentation_base_dir = Path(segmentation_base_dir) if segmentation_base_dir else None
 
     def __len__(self) -> int:
         return len(self.tile_list)
@@ -264,9 +290,23 @@ class TileDataset(Dataset):
         slope_std = self.normalization_stats.get("slope", {}).get("std")
         features[4], _, _ = standardize_slope(features[4], mean=slope_mean, std=slope_std)
 
+        # Optional 6th channel: segmentation layer
+        if self.segmentation_base_dir is not None:
+            tile_id = tile_info.get("tile_id")
+            if not tile_id:
+                tile_id = Path(tile_info["features_path"]).stem
+            seg_path = self.segmentation_base_dir / f"{tile_id}.tif"
+            if not seg_path.exists():
+                raise FileNotFoundError(f"Segmentation tile not found: {seg_path}")
+            seg = _load_and_normalize_segmentation_tile(seg_path, self.tile_size)
+            features = np.concatenate([features, seg], axis=0)
+
         # Convert to tensors
         features_tensor = torch.from_numpy(features).float()
         target_tensor = torch.from_numpy(target).float().unsqueeze(0)
+
+        if self.target_mode == "binary":
+            target_tensor = (target_tensor >= self.binary_threshold).float()
 
         if tile_info.get("augment"):
             features_tensor, target_tensor = _apply_lobe_augmentation(
@@ -369,6 +409,9 @@ def create_dataloaders(
     num_workers: int = 0,
     tile_size: int = 256,
     augmentation_config: Optional[dict] = None,
+    target_mode: str = "proximity",
+    binary_threshold: float = 1.0,
+    segmentation_base_dir: Optional[Path] = None,
 ) -> Tuple[DataLoader, DataLoader]:
     train_dataset = TileDataset(
         train_tiles,
@@ -377,6 +420,9 @@ def create_dataloaders(
         normalization_stats,
         tile_size=tile_size,
         augmentation_config=augmentation_config,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
+        segmentation_base_dir=segmentation_base_dir,
     )
 
     val_dataset = TileDataset(
@@ -385,6 +431,9 @@ def create_dataloaders(
         targets_base_dir,
         normalization_stats,
         tile_size=tile_size,
+        target_mode=target_mode,
+        binary_threshold=binary_threshold,
+        segmentation_base_dir=segmentation_base_dir,
     )
 
     train_loader = DataLoader(

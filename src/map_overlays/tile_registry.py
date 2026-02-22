@@ -14,6 +14,10 @@ from typing import Dict, List, Optional
 import rasterio
 from rasterio.windows import Window
 
+from src.data_processing.boundary_tile_filter import (
+    load_boundary_union,
+    tile_bounds_intersect_boundary,
+)
 from src.data_processing.tiling import Tiler
 from src.training.dataloader import create_data_splits, load_filtered_tiles
 
@@ -208,6 +212,30 @@ class TileRegistry:
 
         logger.info(f"Migrated {len(self.registry['tiles'])} tiles to registry")
         self.save()
+
+    def add_boundary_info(self, boundary_path: Path) -> None:
+        """
+        Set inside_boundary on each tile from geographic_bounds and boundary geometry.
+        Call save() after if you want to persist.
+        """
+        boundary_path = Path(boundary_path)
+        if not boundary_path.exists():
+            logger.warning(f"Boundary file not found: {boundary_path}, skipping inside_boundary")
+            return
+        boundary_union = load_boundary_union(boundary_path)
+        if boundary_union is None:
+            logger.warning("Boundary is empty, setting inside_boundary to True for all")
+        n = 0
+        for tile_id, entry in self.registry["tiles"].items():
+            bounds = entry.get("geographic_bounds")
+            if not bounds:
+                entry["inside_boundary"] = True
+                n += 1
+                continue
+            entry["inside_boundary"] = tile_bounds_intersect_boundary(bounds, boundary_union)
+            if entry["inside_boundary"]:
+                n += 1
+        logger.info(f"Boundary info added: {n}/{len(self.registry['tiles'])} tiles inside boundary")
 
     def update_model_metrics(
         self,

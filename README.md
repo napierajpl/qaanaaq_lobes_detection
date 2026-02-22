@@ -26,6 +26,71 @@ pip install -e .
 
 See `pyproject.toml` for full dependencies. Spatial reference: EPSG:3413 (see `configs/project_metadata.yaml`).
 
+**Optional (segmentation layer):** `pip install scikit-image` — required only for `create_segmentation_layer.py` (not in Poetry to avoid dependency conflicts).
+
+---
+
+## Research boundary (AOI)
+
+Many steps can be limited to a **research boundary** (area of interest) so processing and training use only that region.
+
+- **Boundary file:** `data/raw/vector/research_boundary.shp` — create in QGIS (or use another vector). Used by default where applicable.
+- **Synthetic parenthesis:** Placement is inside the boundary only (script uses this file by default).
+- **Segmentation layer:** Pixels outside the boundary are written as nodata (default: use this boundary).
+- **Training:** Filter the tile list to tiles that intersect the boundary, then point config at the filtered list (see [Limiting training to the boundary](#limiting-training-to-the-boundary)).
+
+**Optional – auto-extracted boundaries:** If you prefer valid-data polygons (non-white areas) instead of a manual boundary:
+
+```bash
+poetry run python scripts/extract_imagery_boundaries.py -i data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif -o data/processed/vector/imagery_valid_boundaries.geojson
+```
+
+Use the output with `-b` in scripts that accept a boundary.
+
+---
+
+## Tile registry
+
+A **tile registry** (`tile_registry.json`) is a single source of truth for tile metadata: geographic bounds, filtering status, train/val/test split, and whether each tile lies inside the research boundary. It is used to limit training to the AOI without opening every GeoTIFF.
+
+**What’s in it**
+
+- **Metadata:** `source_raster`, `tile_size`, `overlap`, `crs`, `created`, `last_updated`.
+- **Per tile:** `tile_id`, `tile_idx`, `geographic_bounds` (minx, miny, maxx, maxy), `pixel_bounds` (row/col in source raster), `filtering` (e.g. `is_valid`, `rgb_valid`, `has_targets`), `split` (train / val / test). Optional: `paths` (features/targets), `baseline_metrics`, **`inside_boundary`** (true/false – set when the registry is built or updated with a boundary).
+
+**How it’s created**
+
+- **New registry (train / train_512):**
+  `create_tile_registry.py` builds the registry from `filtered_tiles.json` and the source raster (or feature tiles). Use `--boundary data/raw/vector/research_boundary.shp` to set `inside_boundary` for each tile.
+
+  ```bash
+  poetry run python scripts/create_tile_registry.py \
+    --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
+    --source-raster data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif \
+    --features-dir data/processed/tiles/train_512/features \
+    --output data/processed/tiles/train_512/tile_registry.json \
+    --tile-size 512 --boundary data/raw/vector/research_boundary.shp
+  ```
+
+- **Existing registry (add boundary only):**
+  To add or refresh `inside_boundary` without re-running the full migration:
+
+  ```bash
+  poetry run python scripts/add_boundary_to_registry.py \
+    --registry data/processed/tiles/train_512/tile_registry.json \
+    -b data/raw/vector/research_boundary.shp
+  ```
+
+- **Synthetic datasets:**
+  The full-raster synthetic script (`generate_synthetic_parenthesis_from_raster.py`) writes `tile_registry.json` (with `inside_boundary`) into `synthetic_parenthesis_256/` and `synthetic_parenthesis_512/` automatically.
+
+**How it’s used**
+
+- **`filter_tiles_by_boundary.py`** can use `--registry <path>` so tile bounds come from the registry instead of reading each feature GeoTIFF (faster on large sets).
+- You can later limit training or validation to tiles with `inside_boundary: true` by filtering the tile list (e.g. from the registry or from a derived `filtered_tiles.json`).
+
+See [Limiting training to the boundary](#limiting-training-to-the-boundary) for the full flow.
+
 ---
 
 ## Training
@@ -77,6 +142,35 @@ See `pyproject.toml` for full dependencies. Spatial reference: EPSG:3413 (see `c
    If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
 
    Runs are logged to MLflow (`./mlruns`). After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
+
+### Limiting training to the boundary
+
+To train only on tiles that intersect the research boundary:
+
+1. **Create a tile registry** (if you don’t have one) so tile bounds are available. Add `--boundary data/raw/vector/research_boundary.shp` to set `inside_boundary` on each tile (see [Tile registry](#tile-registry)):
+
+   ```bash
+   poetry run python scripts/create_tile_registry.py \
+     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
+     --source-raster data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif \
+     --features-dir data/processed/tiles/train_512/features \
+     --output data/processed/tiles/train_512/tile_registry.json \
+     --tile-size 512 --boundary data/raw/vector/research_boundary.shp
+   ```
+
+2. **Filter tiles by boundary:**
+
+   ```bash
+   poetry run python scripts/filter_tiles_by_boundary.py \
+     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
+     -b data/raw/vector/research_boundary.shp \
+     --registry data/processed/tiles/train_512/tile_registry.json \
+     -o data/processed/tiles/train_512/filtered_tiles_in_boundary.json
+   ```
+
+   Without a registry, use `--features-dir data/processed/tiles/train_512/features` instead of `--registry ...` (script will read bounds from each feature GeoTIFF).
+
+3. **Point training at the filtered list:** In `configs/training_config.yaml`, set the path block you use (e.g. `paths.production_512.filtered_tiles`) to `data/processed/tiles/train_512/filtered_tiles_in_boundary.json`, then run `train_model.py` as usual.
 
 ### Dev training (small area, fast iteration)
 
@@ -186,10 +280,61 @@ Run unit tests with `pytest tests/unit`; use `pytest tests/e2e -m e2e` when you 
 
 ---
 
+## Synthetic parenthesis dataset (sanity-check)
+
+Quick check that the pipeline can learn: train on synthetic shapes (black “(” and “)” on real imagery) instead of lobes.
+
+**From full raster (recommended)** — uses `data/raw/vector/research_boundary.shp` so shapes are placed only inside the boundary:
+
+1. Ensure DEM and slope are resampled (e.g. already done by `prepare_training_data.py` or `prepare_training_steps.py`).
+2. Generate synthetic tiles (256 and 512):
+
+   ```bash
+   poetry run python scripts/generate_synthetic_parenthesis_from_raster.py
+   ```
+
+   Output: `data/processed/tiles/synthetic_parenthesis_256/` and `synthetic_parenthesis_512/` (features, targets, `filtered_tiles.json`). Override boundary with `-b path/to/vector.shp` or use `-b data/processed/vector/imagery_valid_boundaries.geojson` if you ran `extract_imagery_boundaries.py`.
+
+3. Train in synthetic mode:
+
+   ```bash
+   poetry run python scripts/train_model.py --config configs/training_config_synthetic_parenthesis.yaml --mode synthetic_parenthesis
+   ```
+
+See `docs/synthetic_parenthesis_dataset.md` for the legacy tile-based generator and details.
+
+---
+
+## Segmentation layer (optional)
+
+A **separate raster layer** of segment IDs (OBIA-style, Felzenszwalb) can be used as a **6th input channel** to the CNN for boundary hints. By default it is limited to the research boundary (nodata outside).
+
+- **Requires:** `pip install scikit-image`
+- **1) Create the full raster** (default: input = full RGB, output = `data/processed/raster/imagery_segmentation_layer.tif`, boundary = research_boundary.shp):
+
+  ```bash
+  poetry run python scripts/create_segmentation_layer.py
+  ```
+
+  Options: `-i` / `-o` for input/output raster, `-b` for boundary (omit to segment full raster), `--scale` / `--scale2` for segment size, `--block-size` for large rasters. See `scripts/create_segmentation_layer.py --help`.
+
+- **2) Tile the segmentation raster** with the same tile size and overlap as your feature tiles (e.g. 512×512, 30% overlap), so each feature tile has a matching segmentation tile:
+
+  ```bash
+  poetry run python scripts/create_tiles.py -i data/processed/raster/imagery_segmentation_layer.tif -o data/processed/tiles/train_512/segmentation --tile-size 512 --overlap 0.3 --no-organize
+  ```
+
+- **3) Enable in training:** In `configs/training_config.yaml` set `data.use_segmentation_layer: true` and under the chosen path (e.g. `paths.production_512`) set `segmentation_dir: "data/processed/tiles/train_512/segmentation"`. The model will use 6 input channels (RGB + DEM + slope + segmentation).
+
+---
+
 ## Other scripts
 
 - **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`.
+- **Boundary / AOI**: `extract_imagery_boundaries.py` – vectorize valid-data (non-white) regions to GeoJSON; `filter_tiles_by_boundary.py` – filter `filtered_tiles.json` to tiles intersecting a boundary (e.g. research_boundary.shp).
+- **Synthetic**: `generate_synthetic_parenthesis_from_raster.py` – full-raster synthetic parenthesis inside boundary, then tile to 256/512; `generate_synthetic_parenthesis_dataset.py` – legacy tile-based synthetic data.
+- **Segmentation**: `create_segmentation_layer.py` – OBIA-style segment ID raster (optional CNN hint), limited to boundary by default.
 - **Analysis**: `compute_baseline_metrics.py`, `analyze_per_tile_performance.py`, `compare_runs.py`.
 - **QGIS**: `generate_tile_index_shapefile.py` – tile index shapefile for the map; use `--tile-size 512` for 512×512 tiles (requires a registry in `train_512/`).
 
-See `docs/PROJECT_STRUCTURE.md` for folder layout and `docs/` for guides (e.g. `training_how_it_works.md`, `training_visualization.md`, `OPTUNA_QUICK_START.md`).
+See `docs/PROJECT_STRUCTURE.md` for folder layout and `docs/` for guides (e.g. `training_how_it_works.md`, `training_visualization.md`, `OPTUNA_QUICK_START.md`, `synthetic_parenthesis_dataset.md`, `plan_synthetic_parenthesis_and_multiscale.md`).
