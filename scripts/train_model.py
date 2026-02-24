@@ -83,6 +83,7 @@ def train_model_with_config(
     run_name: Optional[str] = None,
     applied_best_hparams: Optional[dict] = None,
     max_tiles: Optional[int] = None,
+    filtered_tiles_override: Optional[Path] = None,
 ) -> float:
     """
     Train model with given configuration.
@@ -111,6 +112,8 @@ def train_model_with_config(
     paths = config["paths"][path_key]
 
     filtered_tiles_path = resolve_path(Path(paths["filtered_tiles"]), project_root)
+    if filtered_tiles_override is not None:
+        filtered_tiles_path = resolve_path(Path(filtered_tiles_override), project_root)
     features_dir = resolve_path(Path(paths["features_dir"]), project_root)
     targets_dir = resolve_path(Path(paths["targets_dir"]), project_root)
     models_dir = resolve_path(Path(paths["models_dir"]), project_root)
@@ -118,6 +121,11 @@ def train_model_with_config(
     segmentation_dir = None
     if use_segmentation_layer and paths.get("segmentation_dir"):
         segmentation_dir = resolve_path(Path(paths["segmentation_dir"]), project_root)
+
+    use_slope_stripes_channel = config["data"].get("use_slope_stripes_channel", False)
+    slope_stripes_channel_dir = None
+    if use_slope_stripes_channel and paths.get("slope_stripes_channel_dir"):
+        slope_stripes_channel_dir = resolve_path(Path(paths["slope_stripes_channel_dir"]), project_root)
 
     logger.info("=== Training Configuration ===")
     logger.info(f"Mode: {mode} (tile size: {tile_size}x{tile_size}), target_mode: {target_mode}")
@@ -132,6 +140,13 @@ def train_model_with_config(
                 "Add paths.<key>.segmentation_dir and tile the segmentation raster with the same tile size/overlap."
             )
         logger.info(f"Segmentation dir: {segmentation_dir}")
+    if use_slope_stripes_channel:
+        if not slope_stripes_channel_dir or not slope_stripes_channel_dir.exists():
+            raise ValueError(
+                "use_slope_stripes_channel is true but slope_stripes_channel_dir is missing or does not exist. "
+                "Add paths.<key>.slope_stripes_channel_dir and tile the slope-stripes raster with the same tile size/overlap."
+            )
+        logger.info(f"Slope-stripes channel dir: {slope_stripes_channel_dir}")
 
     # Load filtered tiles
     logger.info("Loading filtered tiles...")
@@ -235,6 +250,7 @@ def train_model_with_config(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_dir,
+        slope_stripes_base_dir=slope_stripes_channel_dir,
     )
 
     # Setup device
@@ -244,8 +260,13 @@ def train_model_with_config(
     # Create model using factory (binary mode: output [0,1] via sigmoid)
     logger.info("Creating model...")
     model_config = dict(config["model"])
+    base_channels = 5
     if use_segmentation_layer:
-        model_config["in_channels"] = 6
+        base_channels += 1
+    if use_slope_stripes_channel:
+        base_channels += 1
+    if base_channels != 5:
+        model_config["in_channels"] = base_channels
     if target_mode == "binary":
         model_config["proximity_max"] = 1
         model_config["output_activation"] = "sigmoid"
@@ -398,7 +419,7 @@ def train_model_with_config(
                 trial.set_user_attr("mlflow_tracking_uri", mlflow.get_tracking_uri())
                 trial.set_user_attr("mode", mode)
                 trial.set_user_attr("model_architecture", architecture)
-                trial.set_user_attr("model_in_channels", 6 if use_segmentation_layer else int(config["model"].get("in_channels", 5)))
+                trial.set_user_attr("model_in_channels", base_channels if (use_segmentation_layer or use_slope_stripes_channel) else int(config["model"].get("in_channels", 5)))
                 trial.set_user_attr("model_out_channels", int(config["model"].get("out_channels", 1)))
                 trial.set_user_attr("training_iou_threshold", float(iou_threshold))
                 trial.set_user_attr("data_normalize_rgb", bool(config["data"].get("normalize_rgb", True)))
@@ -438,12 +459,12 @@ def train_model_with_config(
         best_iou_so_far = -1.0
         best_iou_tile_info_so_far = None
         best_iou_tile_loss_so_far = None
-        last_epoch_saved = None
+        last_time_saved = None
         last_drawn_best_tile_id = None
         last_drawn_best_tile_loss = None
         last_drawn_best_iou_tile_id = None
         last_drawn_best_iou = None
-        SAVE_THROTTLE_EPOCHS = 10
+        SAVE_THROTTLE_SECONDS = 3 * 60  # 3 minutes
 
         # Track metrics across epochs for visualization
         metrics_history = {
@@ -547,6 +568,7 @@ def train_model_with_config(
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
+                    slope_stripes_base_dir=slope_stripes_channel_dir,
                 )
 
             # Unfreeze encoder if specified epoch reached
@@ -676,15 +698,16 @@ def train_model_with_config(
                         best_iou_so_far,
                     )
 
-            # Save best model to disk and redraw best-tile figures only when new best val_loss AND 10+ epochs since last save
+            # Save best model to disk and redraw best-tile figures only when new best val_loss AND 3+ minutes since last save
             if val_metrics["val_loss"] < best_val_loss:
                 prev_best = best_val_loss
                 best_val_loss = val_metrics["val_loss"]
                 best_val_mae = val_metrics["val_mae"]
                 best_val_iou = val_metrics.get("val_iou", 0.0)
+                now = time.time()
                 may_save = (
-                    last_epoch_saved is None
-                    or (epoch - last_epoch_saved) >= SAVE_THROTTLE_EPOCHS
+                    last_time_saved is None
+                    or (now - last_time_saved) >= SAVE_THROTTLE_SECONDS
                 )
                 if may_save:
                     save_checkpoint(
@@ -709,6 +732,7 @@ def train_model_with_config(
                                 target_mode=target_mode,
                                 binary_threshold=binary_threshold,
                                 segmentation_base_dir=segmentation_dir,
+                                slope_stripes_base_dir=slope_stripes_channel_dir,
                             )
                             mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                             if loss_plot_path is not None:
@@ -733,6 +757,7 @@ def train_model_with_config(
                                 target_mode=target_mode,
                                 binary_threshold=binary_threshold,
                                 segmentation_base_dir=segmentation_dir,
+                                slope_stripes_base_dir=slope_stripes_channel_dir,
                                 tile_loss=best_iou_tile_loss_so_far,
                             )
                             mlflow.log_figure(fig, "plots/best_iou_tile.png")
@@ -741,7 +766,7 @@ def train_model_with_config(
                             plt.close(fig)
                             last_drawn_best_iou_tile_id = iid
                             last_drawn_best_iou = best_iou_so_far
-                    last_epoch_saved = epoch
+                    last_time_saved = time.time()
                 print(
                     f"[BEST] epoch={epoch} val_loss={best_val_loss:.6f} "
                     f"(prev_best={prev_best:.6f}) val_mae={best_val_mae:.6f} val_iou={best_val_iou:.6f}"
@@ -855,6 +880,7 @@ def train_model_with_config(
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
+                    slope_stripes_base_dir=slope_stripes_channel_dir,
                 )
                 mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                 if loss_plot_path is not None:
@@ -875,6 +901,7 @@ def train_model_with_config(
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
+                    slope_stripes_base_dir=slope_stripes_channel_dir,
                     tile_loss=best_iou_tile_loss_so_far,
                 )
                 mlflow.log_figure(fig, "plots/best_iou_tile.png")
@@ -906,6 +933,7 @@ def train_model_with_config(
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
+                    slope_stripes_base_dir=slope_stripes_channel_dir,
                 )
                 for tid, fig in pred_figures.items():
                     mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
@@ -924,6 +952,7 @@ def train_model_with_config(
                     target_mode=target_mode,
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
+                    slope_stripes_base_dir=slope_stripes_channel_dir,
                     plot_options=loss_plot_options,
                 )
                 for tid, fig in channel_figures.items():
@@ -1035,6 +1064,18 @@ def main():
         metavar="N",
         help="Max tiles to use in total (before train/val/test split). Use for quick runs.",
     )
+    parser.add_argument(
+        "--filtered-tiles",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Override filtered_tiles.json path (e.g. subset with targets only).",
+    )
+    parser.add_argument(
+        "--use-slope-stripes-channel",
+        action="store_true",
+        help="Use slope-stripes (Gabor) channel as 6th input. Requires slope_stripes_channel_dir in paths.",
+    )
 
     args = parser.parse_args()
 
@@ -1046,6 +1087,8 @@ def main():
         config["training"]["num_epochs"] = args.max_epochs
     if args.tile_size is not None:
         config["data"]["tile_size"] = args.tile_size
+    if args.use_slope_stripes_channel:
+        config["data"]["use_slope_stripes_channel"] = True
     applied_best_hparams = None
     tracking_uri = config.get("mlflow", {}).get("tracking_uri")
     if args.hp_from_run_id:
@@ -1084,6 +1127,7 @@ def main():
         run_name=args.run_name,
         applied_best_hparams=applied_best_hparams,
         max_tiles=args.max_tiles,
+        filtered_tiles_override=args.filtered_tiles,
     )
 
 
