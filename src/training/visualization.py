@@ -8,6 +8,8 @@ from typing import List, Dict, Optional, Tuple, Union, Any, Sequence
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.cm as mcm
 import numpy as np
 import rasterio
 import torch
@@ -406,9 +408,10 @@ def create_training_plots(
         if output_dir:
             fig.savefig(output_dir / 'iou.png', dpi=150, bbox_inches='tight')
 
-    # Improvement percentage
-    if _want('improvement_percent') and 'improvement_percent' in metrics_history:
-        fig = plot_improvement_percentage(epochs, metrics_history['improvement_percent'])
+    # Improvement percentage (only when baseline was computed and list matches epochs)
+    improvement_percent = metrics_history.get('improvement_percent', [])
+    if _want('improvement_percent') and improvement_percent and len(improvement_percent) == len(epochs):
+        fig = plot_improvement_percentage(epochs, improvement_percent)
         figures['improvement_percent'] = fig
         if output_dir:
             fig.savefig(output_dir / 'improvement_percent.png', dpi=150, bbox_inches='tight')
@@ -483,6 +486,33 @@ def _load_rgb_for_display(features_path: Path, features_base_dir: Path) -> np.nd
     return rgb.astype(np.float32)
 
 
+def _load_raw_feature_channels_for_display(
+    features_path: Path, features_base_dir: Path
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load raw R, G, B, DEM, Slope from feature GeoTIFF for display (no normalization)."""
+    p = Path(features_path)
+    path = (features_base_dir / p) if not p.is_absolute() else p
+    empty = (
+        np.zeros((256, 256), dtype=np.float64),
+        np.zeros((256, 256), dtype=np.float64),
+        np.zeros((256, 256), dtype=np.float64),
+        np.zeros((256, 256), dtype=np.float64),
+        np.zeros((256, 256), dtype=np.float64),
+    )
+    if not path.exists():
+        return empty
+    with rasterio.open(path) as src:
+        if src.count < 5:
+            return empty
+        data = src.read([1, 2, 3, 4, 5])
+    r = np.asarray(data[0], dtype=np.float64)
+    g = np.asarray(data[1], dtype=np.float64)
+    b = np.asarray(data[2], dtype=np.float64)
+    dem = np.asarray(data[3], dtype=np.float64)
+    slope = np.asarray(data[4], dtype=np.float64)
+    return r, g, b, dem, slope
+
+
 def _add_proximity_scale_and_extrema(
     ax: plt.Axes,
     data: np.ndarray,
@@ -520,6 +550,7 @@ def _create_tile_prediction_figure(
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
+    slope_stripes_base_dir: Optional[Path] = None,
 ) -> plt.Figure:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -542,6 +573,7 @@ def _create_tile_prediction_figure(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
     features, target = dataset[0]
     features_batch = features.unsqueeze(0).to(device)
@@ -596,6 +628,7 @@ def show_best_predicted_tile(
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
+    slope_stripes_base_dir: Optional[Path] = None,
 ) -> plt.Figure:
     title = f"Lowest-loss tile  |  loss: {loss_value:.6f}"
     return _create_tile_prediction_figure(
@@ -611,6 +644,7 @@ def show_best_predicted_tile(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
 
 
@@ -627,6 +661,7 @@ def show_highest_iou_tile(
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
+    slope_stripes_base_dir: Optional[Path] = None,
     tile_loss: Optional[float] = None,
 ) -> plt.Figure:
     title = f"Highest IoU tile  |  IoU: {iou_value:.4f}"
@@ -645,6 +680,7 @@ def show_highest_iou_tile(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
 
 
@@ -660,6 +696,7 @@ def create_prediction_tile_figures(
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
+    slope_stripes_base_dir: Optional[Path] = None,
 ) -> Dict[str, plt.Figure]:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -688,6 +725,7 @@ def create_prediction_tile_figures(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
     figures = {}
     for i, tile_info in enumerate(rep_tiles):
@@ -710,10 +748,12 @@ def create_prediction_tile_figures(
         axes[0].imshow(rgb)
         axes[0].set_title("RGB")
         axes[0].axis("off")
-        axes[1].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
+        im1 = axes[1].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
+        plt.colorbar(im1, ax=axes[1], shrink=0.7, label="Target" if mode == "binary" else "0–20")
         axes[1].set_title(target_title)
         axes[1].axis("off")
-        axes[2].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
+        im2 = axes[2].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
+        plt.colorbar(im2, ax=axes[2], shrink=0.7, label="Pred" if mode == "binary" else "0–20")
         axes[2].set_title("Prediction")
         axes[2].axis("off")
         title = f"Tile: {tid}  |  MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}"
@@ -766,6 +806,27 @@ def _channel_to_display(arr: np.ndarray) -> np.ndarray:
     return np.clip(a, 0, 1).astype(np.float32)
 
 
+def _load_segmentation_for_display(
+    segmentation_base_dir: Path, tile_id: str,
+) -> Optional[np.ndarray]:
+    """Load segmentation tile as 0-1 array for display; None if missing."""
+    seg_path = segmentation_base_dir / f"{tile_id}.tif"
+    if not seg_path.exists():
+        return None
+    with rasterio.open(seg_path) as src:
+        seg = src.read(1)
+        nd = float(src.nodata if src.nodata is not None else -9999.0)
+    seg = np.asarray(seg, dtype=np.float64)
+    valid = seg != nd
+    out = np.zeros_like(seg)
+    if np.any(valid):
+        v = seg[valid]
+        v_max = float(np.max(v))
+        if v_max > 0:
+            out[valid] = v / v_max
+    return np.clip(out, 0, 1).astype(np.float32)
+
+
 def create_representative_tiles_channel_figures(
     model: torch.nn.Module,
     rep_tiles: List[dict],
@@ -778,11 +839,12 @@ def create_representative_tiles_channel_figures(
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
+    slope_stripes_base_dir: Optional[Path] = None,
     plot_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, plt.Figure]:
     """
-    For each representative tile: one figure with each input channel (R, G, B, DEM, Slope, [Seg]),
-    target and prediction, plus training params info box (same style as advanced loss plot).
+    For each representative tile: one figure with RGB, DEM, Slope, [Segmentation], [SlopeStripes],
+    Target, Prediction. Layout: 2 rows x 4 columns; bottom-left cell empty for text box.
     """
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_iou
@@ -807,11 +869,12 @@ def create_representative_tiles_channel_figures(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
     info_lines = _build_training_params_info_lines(plot_options)
     figures = {}
-    channel_names = ["R", "G", "B", "DEM", "Slope"]
-    n_aux = 2  # DEM, Slope
+    n_rows, n_cols = 2, 4
+    ax_slot_order = [0, 1, 2, 3, 5, 6, 7]
     for i, tile_info in enumerate(rep_tiles):
         features, target = dataset[i]
         features_batch = features.unsqueeze(0).to(device)
@@ -819,54 +882,60 @@ def create_representative_tiles_channel_figures(
             pred = model(features_batch)
         pred_np = np.squeeze(pred.cpu().numpy())
         target_np = target.squeeze().numpy()
-        C = features.shape[0]
-        if C >= 6:
-            channel_names_tile = channel_names + ["Seg"]
-        else:
-            channel_names_tile = channel_names
-        n_channels = len(channel_names_tile)
-        n_panels = n_channels + 2  # target, prediction
-        n_cols = 4
-        n_rows = (n_panels + n_cols - 1) // n_cols
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
-        axes = np.atleast_2d(axes)
-        idx = 0
-        for c in range(n_channels):
-            r, c_ax = idx // n_cols, idx % n_cols
-            ax = axes[r, c_ax]
-            ch = features[c].numpy()
-            if c < 3:
-                # Show R/G/B as red/green/blue tint
-                im = np.clip(ch.astype(np.float64), 0, 1)
-                if im.max() > 1.5:
-                    im = im / 255.0
-                zeros = np.zeros_like(im)
-                if c == 0:
-                    rgb_display = np.stack([im, zeros, zeros], axis=-1)
-                elif c == 1:
-                    rgb_display = np.stack([zeros, im, zeros], axis=-1)
-                else:
-                    rgb_display = np.stack([zeros, zeros, im], axis=-1)
-                ax.imshow(rgb_display)
-            else:
-                im = _channel_to_display(ch)
-                ax.imshow(im, cmap="gray")
-            ax.set_title(channel_names_tile[c])
-            ax.axis("off")
-            idx += 1
-        r, c_ax = idx // n_cols, idx % n_cols
-        axes[r, c_ax].imshow(target_np, vmin=vmin, vmax=vmax, cmap="viridis")
-        axes[r, c_ax].set_title("Target")
-        axes[r, c_ax].axis("off")
-        idx += 1
-        r, c_ax = idx // n_cols, idx % n_cols
-        axes[r, c_ax].imshow(pred_np, vmin=vmin, vmax=vmax, cmap="viridis")
-        axes[r, c_ax].set_title("Prediction")
-        axes[r, c_ax].axis("off")
-        for j in range(idx, n_rows * n_cols):
-            r, c_ax = j // n_cols, j % n_cols
-            axes[r, c_ax].axis("off")
+        fp = tile_info.get("features_path", "").replace("\\", "/")
         tid = tile_info.get("tile_id", f"tile_{i}")
+        raw_r, raw_g, raw_b, raw_dem, raw_slope = _load_raw_feature_channels_for_display(
+            Path(fp), Path(features_dir)
+        )
+        rgb = _load_rgb_for_display(Path(fp), Path(features_dir))
+        panels = []
+        panels.append(("RGB", rgb, "rgb"))
+        dem_disp = _channel_to_display(raw_dem)
+        mn_dem, mx_dem = float(np.nanmin(raw_dem)), float(np.nanmax(raw_dem))
+        panels.append(("DEM", (dem_disp, f"{mn_dem:.1f}–{mx_dem:.1f}"), "gray_label"))
+        slope_disp = _channel_to_display(raw_slope)
+        mn_sl, mx_sl = float(np.nanmin(raw_slope)), float(np.nanmax(raw_slope))
+        panels.append(("Slope", (slope_disp, f"{mn_sl:.1f}–{mx_sl:.1f}"), "gray_label"))
+        seg_used = segmentation_base_dir is not None
+        seg_arr = _load_segmentation_for_display(segmentation_base_dir, tid) if seg_used else None
+        if seg_arr is not None:
+            panels.append(("Segmentation", _channel_to_display(seg_arr), "gray"))
+        else:
+            h, w = raw_dem.shape
+            placeholder = np.zeros((h, w), dtype=np.float32)
+            seg_title = "Segmentation (disabled)" if not seg_used else "Segmentation (no file)"
+            panels.append((seg_title, _channel_to_display(placeholder), "gray"))
+        if slope_stripes_base_dir is not None:
+            stripe = features[-1].numpy()
+            panels.append(("SlopeStripes", _channel_to_display(stripe), "gray"))
+        panels.append(("Target", target_np, "viridis"))
+        panels.append(("Prediction", pred_np, "viridis"))
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        axes_flat = np.atleast_2d(axes).ravel()
+        for slot_idx, (title, data, kind) in zip(ax_slot_order, panels):
+            ax = axes_flat[slot_idx]
+            if kind == "rgb":
+                ax.imshow(data)
+                ax.set_title(title)
+            elif kind == "gray":
+                im = ax.imshow(data, cmap="gray")
+                plt.colorbar(im, ax=ax, shrink=0.6)
+                ax.set_title(title)
+            elif kind == "gray_label":
+                im_arr, label = data
+                im = ax.imshow(im_arr, cmap="gray")
+                cbar = plt.colorbar(im, ax=ax, shrink=0.6)
+                cbar.set_label(label)
+                ax.set_title(title)
+            else:
+                im = ax.imshow(data, vmin=vmin, vmax=vmax, cmap="viridis")
+                plt.colorbar(im, ax=ax, shrink=0.6, label="0–1" if mode == "binary" else "0–20")
+                ax.set_title(title)
+            ax.axis("off")
+        axes_flat[4].axis("off")
+        for j in range(len(panels), len(ax_slot_order)):
+            axes_flat[ax_slot_order[j]].axis("off")
         pred_t = torch.from_numpy(pred_np).unsqueeze(0).unsqueeze(0)
         target_t = torch.from_numpy(target_np).unsqueeze(0).unsqueeze(0)
         mae = compute_mae(pred_t, target_t)

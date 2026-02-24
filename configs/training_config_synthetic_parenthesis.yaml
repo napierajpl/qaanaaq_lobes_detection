@@ -41,8 +41,8 @@ model:
 
 training:
   batch_size: 16
-  num_epochs: 200  # Increased from 50 - U-Net typically needs 100+ epochs
-  learning_rate: 0.000004  # 5e-6; lower than 1e-5 to avoid big steps when encoder unfrozen (reduces val spike/fluctuation)
+  num_epochs: 11  # Increased from 50 - U-Net typically needs 100+ epochs
+  learning_rate: 0.00004  # 5e-6; lower than 1e-5 to avoid big steps when encoder unfrozen (reduces val spike/fluctuation)
   optimizer: "Adam"
   # Loss function options:
   #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
@@ -90,7 +90,7 @@ training:
 
 data:
   # Tile size in pixels (256 or 512). Use 512 to match literature; 256 for faster training.
-  tile_size: 512
+  tile_size: 256
   train_split: 0.6
   val_split: 0.2   # With --max-tiles 50 only ~4 val tiles -> very noisy val loss; use more tiles or higher val_split for stability
   test_split: 0.2
@@ -117,8 +117,8 @@ visualization:
   representative_tile_ids_512: [4750, 5005, 5513, 6953, 7370]  # Optional: for 512x512 production; use indices valid for 512 grid
   representative_tile_ids_dev_512: [0, 1, 2, 3]  # Optional: for 512x512 dev
   # Synthetic parenthesis (256: tile indices from raster grid; 512: usually 0-based)
-  representative_tile_ids_synthetic_parenthesis_256: [3240, 3409, 3577, 3582, 3412]
-  representative_tile_ids_synthetic_parenthesis_512: [0, 1, 2, 3, 4]
+  representative_tile_ids_synthetic_parenthesis_256: [18514, 18673, 19189, 19529, 28016]
+  representative_tile_ids_synthetic_parenthesis_512: [2043, 3057, 4834, 6953, 7038]
   # When configured IDs don't match any tile (e.g. wrong grid), use first N tiles so MLflow always gets example figures
   prediction_tiles_fallback_n: 5  # 0 = no fallback
 

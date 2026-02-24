@@ -113,3 +113,59 @@ def compute_texture_hint_channels(
     aspect = aspect_from_dem(dem)
     alignment = slope_alignment(stripe_angle, aspect)
     return np.stack([coherence, alignment], axis=0)
+
+
+def compute_slope_stripes_channel(
+    rgb: np.ndarray,
+    dem: np.ndarray,
+    sigma_smooth: float = 1.5,
+    sigma_structure: float = 2.0,
+) -> np.ndarray:
+    """
+    Single band: coherence * slope_alignment (high where stripes exist and follow slope).
+    Returns (H, W) float32, values in [0, 1].
+    """
+    coherence, stripe_angle = structure_tensor_coherence_and_orientation(
+        rgb, sigma_smooth=sigma_smooth, sigma_structure=sigma_structure
+    )
+    aspect = aspect_from_dem(dem)
+    alignment = slope_alignment(stripe_angle, aspect)
+    out = coherence * alignment
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
+def compute_gabor_slope_stripes_channel(
+    rgb: np.ndarray,
+    dem: np.ndarray,
+    frequency: float = 0.1,
+    sigma: float = 3.0,
+    n_orientations: int = 16,
+) -> np.ndarray:
+    """
+    Gabor-based slope-stripes: max Gabor response over orientations = strength;
+    stripe direction = orientation of max response (+ pi/2); then strength * slope_alignment.
+    Requires scikit-image. Returns (H, W) float32, values in [0, 1].
+    """
+    try:
+        from skimage.filters import gabor
+    except ImportError:
+        raise ImportError("Gabor slope-stripes requires scikit-image. Install with: pip install scikit-image")
+
+    gray = _rgb_to_grayscale(rgb)
+    thetas = np.linspace(0, np.pi, n_orientations, endpoint=False)
+    magnitudes = []
+    for theta in thetas:
+        real, imag = gabor(gray, frequency=frequency, theta=theta, sigma_x=sigma, sigma_y=sigma)
+        mag = np.sqrt(real.astype(np.float64) ** 2 + imag.astype(np.float64) ** 2)
+        magnitudes.append(mag)
+    stack = np.stack(magnitudes, axis=0)
+    strength = np.max(stack, axis=0).astype(np.float32)
+    theta_idx = np.argmax(stack, axis=0)
+    stripe_angle = (thetas[theta_idx] + np.pi / 2).astype(np.float32)
+    strength_max = float(np.max(strength))
+    if strength_max > 1e-12:
+        strength = np.clip(strength / strength_max, 0.0, 1.0).astype(np.float32)
+    aspect = aspect_from_dem(dem)
+    alignment = slope_alignment(stripe_angle, aspect)
+    out = strength * alignment
+    return np.clip(out, 0.0, 1.0).astype(np.float32)

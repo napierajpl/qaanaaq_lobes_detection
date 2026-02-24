@@ -45,3 +45,8 @@ Example: `Monday February 16, 2026`
 1. When a task requires the current date or time, run one of the commands above in the project root (or current workspace).
 2. Use the command output as the authoritative current date/time for that task.
 3. Do not assume or reuse a date from earlier in the conversation for time-sensitive output (e.g. diary entry for "today").
+
+---
+name: include-graphics-in-markdown
+description: When need to reference graphic files - especially charts or visualizations, when you can display them, do it - don't use links to images. The only exception are huge raw datasets that are 20MB or more.
+---

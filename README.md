@@ -305,12 +305,21 @@ See `docs/synthetic_parenthesis_dataset.md` for the legacy tile-based generator 
 
 ---
 
+## Slope-stripes channel (optional)
+
+Optional raster channel (Gabor freq=0.15, sigma=5.0) indicating where linear texture aligns with terrain slope; see **docs/daily_diary/** for process description and proof figures. **Run** (after DEM/slope resampling): `poetry run python scripts/create_slope_stripes_channel.py --method gabor --gabor-frequency 0.15 --gabor-sigma 5.0`. Default output: `data/processed/raster/slope_stripes_channel.tif`. Tile with `create_tiles.py` (same size/overlap as features), then set `data.use_slope_stripes_channel: true` and `slope_stripes_channel_dir` in config. Requires `scikit-image`. `prepare_training_data.py` can generate and tile this channel in one go.
+
+---
+
 ## Segmentation layer (optional)
 
 A **separate raster layer** of segment IDs (OBIA-style, Felzenszwalb) can be used as a **6th input channel** to the CNN for boundary hints. By default it is limited to the research boundary (nodata outside).
 
 - **Requires:** `pip install scikit-image`
-- **1) Create the full raster** (default: input = full RGB, output = `data/processed/raster/imagery_segmentation_layer.tif`, boundary = research_boundary.shp):
+
+### Production (train_512 or train)
+
+- **1) Create the full raster** (default: input = `data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif`, output = `data/processed/raster/imagery_segmentation_layer.tif`, boundary = research_boundary.shp). Skip if `imagery_segmentation_layer.tif` already exists.
 
   ```bash
   poetry run python scripts/create_segmentation_layer.py
@@ -318,23 +327,29 @@ A **separate raster layer** of segment IDs (OBIA-style, Felzenszwalb) can be use
 
   Options: `-i` / `-o` for input/output raster, `-b` for boundary (omit to segment full raster), `--scale` / `--scale2` for segment size, `--block-size` for large rasters. See `scripts/create_segmentation_layer.py --help`.
 
-- **2) Tile the segmentation raster** with the same tile size and overlap as your feature tiles (e.g. 512×512, 30% overlap), so each feature tile has a matching segmentation tile:
+- **2) Tile the segmentation raster** with the **same tile size and overlap** as your feature tiles, so each feature tile has a matching segmentation tile (e.g. for 512×512 production):
 
   ```bash
   poetry run python scripts/create_tiles.py -i data/processed/raster/imagery_segmentation_layer.tif -o data/processed/tiles/train_512/segmentation --tile-size 512 --overlap 0.3 --no-organize
   ```
 
+  For 256×256 use `-o data/processed/tiles/train/segmentation` and `--tile-size 256`.
+
 - **3) Enable in training:** In `configs/training_config.yaml` set `data.use_segmentation_layer: true` and under the chosen path (e.g. `paths.production_512`) set `segmentation_dir: "data/processed/tiles/train_512/segmentation"`. The model will use 6 input channels (RGB + DEM + slope + segmentation).
+
+### Synthetic parenthesis
+
+For the synthetic dataset, the full segmentation raster is created by `create_segmentation_for_synthetic_parenthesis.py` (from `synthetic_rgb_with_shapes.tif`); tiling to 256/512 is done by `generate_synthetic_parenthesis_from_raster.py` or `tile_synthetic_segmentation.py`. See `pipelines/run_synthetic_from_raster_pipeline.sh`.
 
 ---
 
 ## Other scripts
 
-- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`.
+- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset.
 - **Boundary / AOI**: `extract_imagery_boundaries.py` – vectorize valid-data (non-white) regions to GeoJSON; `filter_tiles_by_boundary.py` – filter `filtered_tiles.json` to tiles intersecting a boundary (e.g. research_boundary.shp).
 - **Synthetic**: `generate_synthetic_parenthesis_from_raster.py` – full-raster synthetic parenthesis inside boundary, then tile to 256/512; `generate_synthetic_parenthesis_dataset.py` – legacy tile-based synthetic data.
 - **Segmentation**: `create_segmentation_layer.py` – OBIA-style segment ID raster (optional CNN hint), limited to boundary by default.
 - **Analysis**: `compute_baseline_metrics.py`, `analyze_per_tile_performance.py`, `compare_runs.py`.
-- **QGIS**: `generate_tile_index_shapefile.py` – tile index shapefile for the map; use `--tile-size 512` for 512×512 tiles (requires a registry in `train_512/`).
+- **QGIS**: `generate_tile_index_shapefile.py` – tile index shapefile for the map; use `--tile-size 512` for 512×512 tiles (requires a registry in `train_512/`). **Synthetic parenthesis:** `generate_synthetic_parenthesis_shapefile.py --tile-size 256` (or `512`) – writes `tile_index.shp` and QML styles into the synthetic tile directory for QGIS.
 
 See `docs/PROJECT_STRUCTURE.md` for folder layout and `docs/` for guides (e.g. `training_how_it_works.md`, `training_visualization.md`, `OPTUNA_QUICK_START.md`, `synthetic_parenthesis_dataset.md`, `plan_synthetic_parenthesis_and_multiscale.md`).

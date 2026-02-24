@@ -1,6 +1,7 @@
-# Target mode: "proximity" (0-20 regression) | "binary" (0/1 lobe vs background). Default proximity.
-# target_mode: "proximity"
 
+# Target mode: "proximity" (0-20 regression) | "binary" (0/1 lobe vs background)
+# Binary simplifies the task; use with loss bce or dice and iou_threshold 0.5.
+target_mode: "binary"
 model:
   # Architecture options:
   #   - "unet": Baseline U-Net without pretrained encoder
@@ -11,14 +12,14 @@ model:
 
   # UNet-specific parameters (only used if architecture == "unet")
   base_channels: 64
-  dropout: 0.2  # Dropout for regularization (prevents overfitting)
+  dropout: 0.3  # Dropout for regularization (prevents overfitting)
 
   # SatlasPretrain-specific parameters (only used if architecture == "satlaspretrain_unet")
   encoder:
     name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
     pretrained: true  # Use pretrained weights from SatlasPretrain
     freeze_encoder: true  # Freeze encoder initially, unfreeze after convergence
-    unfreeze_after_epoch: 10  # Unfreeze encoder after this epoch (0 = never unfreeze)
+    unfreeze_after_epoch: 50  # Unfreeze encoder after this epoch (0 = never unfreeze)
   decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
   # Optional SE + PPM (Gully-ERFNet style). Ablation: set use_se/use_ppm true/false as needed.
   use_se: true
@@ -28,13 +29,13 @@ model:
   # Bound output to target range [0, 20] (proximity maps). Avoids negative predictions.
   proximity_max: 20  # 0 = no bound
   # output_activation: "clamp" | "sigmoid" | "sigmoid_steep". clamp = no saturation at 0/20 (default). sigmoid_steep = steeper curve, larger gradients near extremes.
-  output_activation: clamp
+  output_activation: sigmoid
   # sigmoid_temperature: 0.3  # for sigmoid_steep only; smaller = steeper
 
 training:
-  batch_size: 32
-  num_epochs: 300  # Increased from 50 - U-Net typically needs 100+ epochs
-  learning_rate: 0.05
+  batch_size: 16
+  num_epochs: 35 # Increased from 50 - U-Net typically needs 100+ epochs
+  learning_rate: 0.00001
   optimizer: "Adam"
   # Loss function options:
   #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
@@ -47,7 +48,7 @@ training:
   #   - "combined": IoU + Weighted Smooth L1; best val loss in tuning, more stable (diary: combined preferred).
   #   - "acl": Adaptive Correction Loss (Gully-ERFNet): λ·Dice + (1−λ)·Focal; linear structures, imbalance.
   #   See docs/loss_functions.md for full descriptions and config params.
-  loss_function: "acl"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
+  loss_function: "bce"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
   weight_decay: 0.001  # Increased from 0.0001 to reduce overfitting
   # Weighted loss parameters (for weighted_smooth_l1 and combined)
   lobe_weight: 5.0  # Weight for lobe pixels (value >= threshold) - not used with encouragement
@@ -70,14 +71,14 @@ training:
   #   - IoU = intersection / union of these binary masks
   #   - If model predicts all values < 1.0, IoU will be 0 (no overlap)
   #   - Note: Proximity zone expanded to 20px (Jan 22, 2026) for better class balance
-  iou_threshold: 1.0  # Pixels with value >= this are considered lobes (lower = easier task)
+  iou_threshold: 5.0  # Pixels with value >= this are considered lobes (lower = easier task)
   # Learning rate scheduler
   lr_scheduler: "ReduceLROnPlateau"
   lr_scheduler_patience: 5
   lr_scheduler_factor: 0.8
   lr_scheduler_min_lr: 0.0001
   # Early stopping
-  early_stopping_patience: 30
+  early_stopping_patience: 20
   early_stopping_min_delta: 0.00001
   # Gradient clipping (for stability)
   max_grad_norm: 1.0
@@ -91,15 +92,14 @@ data:
   normalize_rgb: true
   standardize_dem: true
   standardize_slope: true
+  # Optional 6th input channel: segmentation layer (OBIA-style segment IDs). Requires paths.<key>.segmentation_dir.
+  use_segmentation_layer: true
+  # Optional channel: slope-stripes (coherence × slope alignment, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
+  use_slope_stripes_channel: true
   # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).
-  # Prepare that file with: scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml
-  use_background_and_augmentation: true
-  # Subsampling: use a random subset of train tiles each epoch (0.0–1.0). Reduces time per epoch and can reduce overtraining.
-  # 1.0 = use all tiles; e.g. 0.3 = 30% of tiles per epoch, different random subset each epoch.
-  train_subsample_ratio: 0.3
-  # Optional 6th input channel: segmentation layer (CNN boundary hint). Requires tiled segmentation dir in paths.
-  use_segmentation_layer: false
-
+  use_background_and_augmentation: false
+  # Subsampling: use a random subset of train tiles each epoch (0.0–1.0).
+  train_subsample_ratio: 0.6
 # Representative tiles for post-training prediction visualization (logged to MLflow).
 # List tile indices (int) and/or tile_id strings (e.g. "tile_01234"). Empty list = skip.
 # 256x256: dev has 36 tiles (tile_0000..tile_0035); production has many more (use indices or tile_id).
@@ -124,6 +124,7 @@ paths:
     features_dir: "data/processed/tiles/dev/train/features"
     targets_dir: "data/processed/tiles/dev/train/targets"
     models_dir: "data/models/dev"
+    # slope_stripes_channel_dir: "data/processed/tiles/dev/train/slope_stripes_channel"  # optional
 
   # Dev mode, 512x512 tiles
   dev_512:
@@ -131,6 +132,7 @@ paths:
     features_dir: "data/processed/tiles/dev/train_512/features"
     targets_dir: "data/processed/tiles/dev/train_512/targets"
     models_dir: "data/models/dev"
+    # slope_stripes_channel_dir: "data/processed/tiles/dev/train_512/slope_stripes_channel"  # optional
 
   # Production mode, 256x256 tiles
   production:
@@ -145,7 +147,8 @@ paths:
     features_dir: "data/processed/tiles/train_512/features"
     targets_dir: "data/processed/tiles/train_512/targets"
     models_dir: "data/models/production"
-    # segmentation_dir: "data/processed/tiles/train_512/segmentation"  # optional; use with data.use_segmentation_layer: true
+    segmentation_dir: "data/processed/tiles/train_512/segmentation"
+    slope_stripes_channel_dir: "data/processed/tiles/train_512/slope_stripes_channel"
 
   # Synthetic parenthesis (sanity-check, 512x512 only): separate from dev/production. Generate with:
   #   poetry run python scripts/generate_synthetic_parenthesis_dataset.py

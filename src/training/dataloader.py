@@ -227,6 +227,7 @@ class TileDataset(Dataset):
         target_mode: str = "proximity",
         binary_threshold: float = 1.0,
         segmentation_base_dir: Optional[Path] = None,
+        slope_stripes_base_dir: Optional[Path] = None,
     ):
         self.tile_list = tile_list
         self.features_base_dir = Path(features_base_dir)
@@ -237,6 +238,7 @@ class TileDataset(Dataset):
         self.target_mode = (target_mode or "proximity").lower()
         self.binary_threshold = binary_threshold
         self.segmentation_base_dir = Path(segmentation_base_dir) if segmentation_base_dir else None
+        self.slope_stripes_base_dir = Path(slope_stripes_base_dir) if slope_stripes_base_dir else None
 
     def __len__(self) -> int:
         return len(self.tile_list)
@@ -300,6 +302,19 @@ class TileDataset(Dataset):
                 raise FileNotFoundError(f"Segmentation tile not found: {seg_path}")
             seg = _load_and_normalize_segmentation_tile(seg_path, self.tile_size)
             features = np.concatenate([features, seg], axis=0)
+
+        # Optional channel: slope-stripes (0-1, no normalization)
+        if self.slope_stripes_base_dir is not None:
+            tile_id = tile_info.get("tile_id")
+            if not tile_id:
+                tile_id = Path(tile_info["features_path"]).stem
+            stripe_path = self.slope_stripes_base_dir / f"{tile_id}.tif"
+            if not stripe_path.exists():
+                raise FileNotFoundError(f"Slope-stripes tile not found: {stripe_path}")
+            with rasterio.open(stripe_path) as src:
+                stripe = src.read(1)
+            stripe = np.clip(np.asarray(stripe, dtype=np.float32), 0.0, 1.0)[np.newaxis, :, :]
+            features = np.concatenate([features, stripe], axis=0)
 
         # Convert to tensors
         features_tensor = torch.from_numpy(features).float()
@@ -412,6 +427,7 @@ def create_dataloaders(
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
+    slope_stripes_base_dir: Optional[Path] = None,
 ) -> Tuple[DataLoader, DataLoader]:
     train_dataset = TileDataset(
         train_tiles,
@@ -423,6 +439,7 @@ def create_dataloaders(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
 
     val_dataset = TileDataset(
@@ -434,6 +451,7 @@ def create_dataloaders(
         target_mode=target_mode,
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
+        slope_stripes_base_dir=slope_stripes_base_dir,
     )
 
     train_loader = DataLoader(
