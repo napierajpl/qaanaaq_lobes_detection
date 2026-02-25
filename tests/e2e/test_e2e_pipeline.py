@@ -62,9 +62,16 @@ class TestE2EMinimalTraining:
         client = mlflow.MlflowClient()
         exp = client.get_experiment_by_name("lobe_detection")
         assert exp is not None
-        runs = client.search_runs(experiment_ids=[exp.experiment_id], max_results=1)
+        runs = client.search_runs(
+            experiment_ids=[exp.experiment_id],
+            max_results=20,
+            order_by=["attributes.start_time DESC"],
+        )
         assert len(runs) >= 1
-        run = runs[0]
+        run = next((r for r in runs if "best_val_loss" in (r.data.metrics or {})), None)
+        assert run is not None, (
+            "No recent run with best_val_loss. Runs may be in progress or ordering changed."
+        )
         metrics = run.data.metrics
         assert "best_val_loss" in metrics
         assert isinstance(metrics["best_val_loss"], (int, float))

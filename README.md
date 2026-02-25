@@ -135,6 +135,7 @@ See [Limiting training to the boundary](#limiting-training-to-the-boundary) for 
    - `--config PATH` – config file (default: `configs/training_config.yaml`)
    - `--run-name NAME` – MLflow run name
    - `--max-epochs N` – override `num_epochs` (e.g. `--max-epochs 1` for a quick run)
+   - `--max-tiles N` – cap total tiles before train/val/test split (for quick runs)
    - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
    - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
    - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
