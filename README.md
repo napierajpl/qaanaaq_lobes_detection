@@ -56,7 +56,7 @@ A **tile registry** (`tile_registry.json`) is a single source of truth for tile 
 **What’s in it**
 
 - **Metadata:** `source_raster`, `tile_size`, `overlap`, `crs`, `created`, `last_updated`.
-- **Per tile:** `tile_id`, `tile_idx`, `geographic_bounds` (minx, miny, maxx, maxy), `pixel_bounds` (row/col in source raster), `filtering` (e.g. `is_valid`, `rgb_valid`, `has_targets`), `split` (train / val / test). Optional: `paths` (features/targets), `baseline_metrics`, **`inside_boundary`** (true/false – set when the registry is built or updated with a boundary).
+- **Per tile:** `tile_id`, `tile_idx`, `geographic_bounds` (minx, miny, maxx, maxy), `pixel_bounds` (row/col in source raster), `filtering` (e.g. `is_valid`, `rgb_valid`, `has_targets`), `split` (train / val / test). Optional: `paths` (features/targets), `baseline_metrics`, **`inside_boundary`** (true/false – set when the registry is built or updated with a boundary), **`illumination`** and **`illumination_metrics`** (shadow/sun/ambiguous – set by `add_illumination_tags.py`).
 
 **How it’s created**
 
@@ -90,6 +90,48 @@ A **tile registry** (`tile_registry.json`) is a single source of truth for tile 
 - You can later limit training or validation to tiles with `inside_boundary: true` by filtering the tile list (e.g. from the registry or from a derived `filtered_tiles.json`).
 
 See [Limiting training to the boundary](#limiting-training-to-the-boundary) for the full flow.
+
+---
+
+## Illumination tagging (sun / shadow / mixed)
+
+Imagery can mix **sunlit** and **shadowed** areas; the same terrain looks different in each. You can tag tiles as **shadow**, **sun**, or **mixed** and then train only on one type (e.g. sun or shadow) to test whether illumination is a problem.
+
+**1. Classify tiles by shadow mask (recommended)**
+
+Use a **hand-drawn shadow mask**: polygons = shadow, everything outside = sun. Tiles are classified by **area fraction** of the tile covered by shadow:
+
+- **shadow**: ≥70% of tile in shadow polygons  
+- **sun**: ≤30% in shadow (i.e. ≥70% sun)  
+- **mixed**: between 30% and 70% (configurable threshold)
+
+Run after you have `tile_registry.json` (and optionally `filtered_tiles.json`):
+
+```bash
+poetry run python scripts/classify_tiles_by_shadow_mask.py
+```
+
+- **Config** `configs/data_preparation_config.yaml` → **`illumination`**: **`shadow_mask`** (e.g. `data/raw/vector/shadow_mask.shp`), **`mixed_threshold`** (default `0.3` → tile is mixed when >30% is the minority class).
+- **CLI**: `--shadow-mask PATH`, `--mixed-threshold 0.3`, `--registry`, `--filtered-tiles`, `--qgis-layer`, `--dry-run`.
+- Updates **`illumination`** (and empty **`illumination_metrics`**) in **tile_registry.json** and **filtered_tiles.json**; writes **illumination_tiles.geojson** + **.qml** for QGIS (shadow / sun / mixed styling).
+
+**Legacy: add_illumination_tags.py**  
+Alternative: centroid point-in-polygon from a vector with an attribute, or automatic tagging from RGB (HSV). See config `illumination.illumination_vector` and `illumination.shadow_example_ids` / `sun_example_ids`. Values there are sun / shadow / ambiguous; the recommended pipeline uses **classify_tiles_by_shadow_mask.py** and sun / shadow / mixed.
+
+**2. Train only on sun or shadow**
+
+By default, training uses all tiles. To train only on **sun** or **shadow** tiles (no background):
+
+```bash
+poetry run python scripts/train_model.py --illumination-filter sun
+# or
+poetry run python scripts/train_model.py --illumination-filter shadow
+```
+
+- Keeps only tiles whose **`illumination`** matches the filter (**mixed** and background are excluded unless you change config).
+- To **include background** when using the filter, set in `configs/training_config.yaml`: **`data.illumination_include_background: true`**.
+
+If you use the extended set (`use_background_and_augmentation: true`), re-run **`prepare_extended_training_set.py`** after classifying tiles so augmented entries inherit **`illumination`** from the source lobe tile.
 
 ---
 
@@ -136,13 +178,14 @@ See [Limiting training to the boundary](#limiting-training-to-the-boundary) for 
    - `--run-name NAME` – MLflow run name
    - `--max-epochs N` – override `num_epochs` (e.g. `--max-epochs 1` for a quick run)
    - `--max-tiles N` – cap total tiles before train/val/test split (for quick runs)
+   - `--illumination-filter sun|shadow` – train only on sun or shadow tiles (no background by default; requires illumination tags from `add_illumination_tags.py`). Set `data.illumination_include_background: true` in config to include background.
    - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
    - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
    - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
 
    If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
 
-   Runs are logged to MLflow (`./mlruns`). After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
+   Runs are logged to MLflow (`./mlruns`). When prompted, you can enter a **run intention** (short description); it is stored as the MLflow tag `run_intention` and shown on the loss plot, useful for diary and run comparison. After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
 
 ### Limiting training to the boundary
 
@@ -246,7 +289,8 @@ Open http://127.0.0.1:5001. Use it to compare runs, view metrics, and download a
 
 ## Configuration
 
-- **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs.
+- **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs, `illumination_filter` and `illumination_include_background` (when training on sun/shadow only).
+- **Data preparation / illumination**: `configs/data_preparation_config.yaml` – extended set (background, augmentation) and **`illumination`** (shadow/sun example tile IDs, `ambiguous_max_fraction` or `ambiguous_value_band` for tagging).
 - **Loss functions**: See [docs/loss_functions.md](docs/loss_functions.md) for descriptions of all options (`smooth_l1`, `weighted_smooth_l1`, `dice`, `iou`, `soft_iou`, `encouragement`, `focal`, `combined`).
 - **Best HP (after tuning)**: `configs/best_hyperparameters.yaml` – can be merged or used to update the main config.
 - **Spatial/project**: `configs/project_metadata.yaml`.
@@ -346,7 +390,7 @@ For the synthetic dataset, the full segmentation raster is created by `create_se
 
 ## Other scripts
 
-- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset.
+- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset. **Illumination:** **`classify_tiles_by_shadow_mask.py`** – classify tiles as sun/shadow/mixed from **shadow mask** (polygons = shadow, outside = sun; >30% minority → mixed); update `tile_registry.json` and `filtered_tiles.json`, write QGIS layer; config: `illumination.shadow_mask`, `illumination.mixed_threshold`. Legacy: `add_illumination_tags.py` (centroid or RGB).
 - **Boundary / AOI**: `extract_imagery_boundaries.py` – vectorize valid-data (non-white) regions to GeoJSON; `filter_tiles_by_boundary.py` – filter `filtered_tiles.json` to tiles intersecting a boundary (e.g. research_boundary.shp).
 - **Synthetic**: `generate_synthetic_parenthesis_from_raster.py` – full-raster synthetic parenthesis inside boundary, then tile to 256/512; `generate_synthetic_parenthesis_dataset.py` – legacy tile-based synthetic data.
 - **Segmentation**: `create_segmentation_layer.py` – OBIA-style segment ID raster (optional CNN hint), limited to boundary by default.

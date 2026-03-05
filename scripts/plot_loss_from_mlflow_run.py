@@ -143,6 +143,7 @@ def main():
     min_delta_str = _read_param(params_dir, "training.early_stopping_min_delta")
     min_delta = float(min_delta_str) if min_delta_str else 1e-5
     early_stop_counter = _early_stop_counter_from_val_loss(val_loss, min_delta) if early_stopping_patience else None
+    early_stopping_min_delta = float(min_delta_str) if min_delta_str else None
 
     num_train = _read_param(params_dir, "num_train_tiles")
     num_val = _read_param(params_dir, "num_val_tiles")
@@ -162,6 +163,7 @@ def main():
         min_val_loss=min(val_loss) if val_loss else None,
         early_stop_counter=early_stop_counter,
         early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
         config_summary=config_summary,
         num_train_tiles=num_train_tiles,
         num_val_tiles=num_val_tiles,

@@ -211,6 +211,25 @@ def train_model_with_config(
                 extended_path,
             )
 
+    illumination_filter = config["data"].get("illumination_filter") or "all"
+    illumination_include_background = config["data"].get("illumination_include_background", False)
+    if illumination_filter in ("shadow", "sun"):
+        before = len(train_tiles)
+        if illumination_include_background:
+            train_tiles = [
+                t for t in train_tiles
+                if t.get("role") == "background" or t.get("illumination") == illumination_filter
+            ]
+            logger.info(
+                f"Illumination filter '{illumination_filter}': {len(train_tiles)} train tiles (was {before}); "
+                "background tiles included."
+            )
+        else:
+            train_tiles = [t for t in train_tiles if t.get("illumination") == illumination_filter]
+            logger.info(
+                f"Illumination filter '{illumination_filter}' (no background): {len(train_tiles)} train tiles (was {before})."
+            )
+
     # Compute normalization statistics from lobe training tiles only (exclude background/augmented for stats)
     logger.info("Computing normalization statistics...")
     extended_loaded = use_bg_aug and (filtered_tiles_path.parent / "extended_training_tiles.json").exists()
@@ -511,6 +530,7 @@ def train_model_with_config(
             "num_train_tiles": len(train_tiles),
             "num_val_tiles": len(val_tiles),
             "early_stopping_patience": early_stopping_patience,
+            "early_stopping_min_delta": early_stopping_min_delta if early_stopping_patience else None,
             "freeze_encoder": enc.get("freeze_encoder"),
             "unfreeze_after_epoch": enc.get("unfreeze_after_epoch"),
         }
@@ -530,6 +550,8 @@ def train_model_with_config(
             except EOFError:
                 run_intention = None
             loss_plot_options["run_intention"] = run_intention
+            if active is not None and run_intention:
+                mlflow.set_tag("run_intention", run_intention)
         else:
             loss_plot_options["run_intention"] = None
 
@@ -1072,6 +1094,13 @@ def main():
         help="Override filtered_tiles.json path (e.g. subset with targets only).",
     )
     parser.add_argument(
+        "--illumination-filter",
+        type=str,
+        choices=["all", "sun", "shadow"],
+        default=None,
+        help="Train only on sun or shadow tiles (plus background). Requires illumination tags from add_illumination_tags.py.",
+    )
+    parser.add_argument(
         "--use-slope-stripes-channel",
         action="store_true",
         help="Use slope-stripes (Gabor) channel as 6th input. Requires slope_stripes_channel_dir in paths.",
@@ -1089,6 +1118,8 @@ def main():
         config["data"]["tile_size"] = args.tile_size
     if args.use_slope_stripes_channel:
         config["data"]["use_slope_stripes_channel"] = True
+    if args.illumination_filter is not None:
+        config["data"]["illumination_filter"] = args.illumination_filter
     applied_best_hparams = None
     tracking_uri = config.get("mlflow", {}).get("tracking_uri")
     if args.hp_from_run_id:

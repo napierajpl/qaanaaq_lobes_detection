@@ -151,6 +151,7 @@ def plot_loss(
     min_val_loss: Optional[float] = None,
     early_stop_counter: Optional[List[int]] = None,
     early_stopping_patience: Optional[int] = None,
+    early_stopping_min_delta: Optional[float] = None,
     config_summary: Optional[str] = None,
     num_train_tiles: Optional[int] = None,
     num_val_tiles: Optional[int] = None,
@@ -207,6 +208,11 @@ def plot_loss(
     ax.grid(True, alpha=0.3)
 
     info_lines = []
+    if early_stopping_patience is not None and early_stop_counter is not None:
+        early_note = "Early stop: val_loss"
+        if early_stopping_min_delta is not None and early_stopping_min_delta > 0:
+            early_note += f" (improvement >= {early_stopping_min_delta:.0e})"
+        info_lines.append(early_note)
     if config_summary:
         info_lines.extend(s.strip() for s in config_summary.split("|") if s.strip())
     if num_train_tiles is not None or num_val_tiles is not None:
@@ -388,6 +394,7 @@ def create_training_plots(
             min_val_loss=min_val,
             early_stop_counter=early_stop_counter,
             early_stopping_patience=opts.get('early_stopping_patience'),
+            early_stopping_min_delta=opts.get('early_stopping_min_delta'),
             config_summary=opts.get('config_summary'),
             num_train_tiles=opts.get('num_train_tiles'),
             num_val_tiles=opts.get('num_val_tiles'),
@@ -607,7 +614,7 @@ def _create_tile_prediction_figure(
     axes[2].set_title("Prediction")
     _add_proximity_scale_and_extrema(axes[2], pred_np, vmin, vmax, colorbar_label)
     axes[2].axis("off")
-    subtitle = f"{title}: {tid}  |  MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}"
+    subtitle = f"{title}  |  MAE: {mae:.4f}  RMSE: {rmse:.4f}  IoU: {iou:.4f}"
     if mode == "binary" and np.max(target_np) <= 0:
         subtitle += "  (background tile — target all 0)"
     fig.suptitle(subtitle, fontsize=10)
@@ -630,7 +637,8 @@ def show_best_predicted_tile(
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
 ) -> plt.Figure:
-    title = f"Lowest-loss tile  |  loss: {loss_value:.6f}"
+    tid = tile_info.get("tile_id", "?")
+    title = f"Lowest-loss tile  |  {tid}  |  loss: {loss_value:.6f}"
     return _create_tile_prediction_figure(
         model,
         tile_info,
@@ -664,7 +672,8 @@ def show_highest_iou_tile(
     slope_stripes_base_dir: Optional[Path] = None,
     tile_loss: Optional[float] = None,
 ) -> plt.Figure:
-    title = f"Highest IoU tile  |  IoU: {iou_value:.4f}"
+    tid = tile_info.get("tile_id", "?")
+    title = f"Highest IoU tile  |  {tid}  |  IoU: {iou_value:.4f}"
     if tile_loss is not None:
         title += f"  |  loss: {tile_loss:.6f}"
     return _create_tile_prediction_figure(
