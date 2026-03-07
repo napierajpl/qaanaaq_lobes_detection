@@ -182,6 +182,10 @@ If you use the extended set (`use_background_and_augmentation: true`), re-run **
    - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
    - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
    - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
+   - `--use-slope-stripes-channel` – enable slope-stripes (Gabor) as an extra input channel; requires `slope_stripes_channel_dir` in paths
+   - `--slope-stripes-only` – use **only** the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting `use_rgb`/`use_dem`/`use_slope`/`use_segmentation_layer` to false and `use_slope_stripes_channel` to true in config
+
+   **Input layer toggles** (in `configs/training_config.yaml` under `data`): **use_rgb**, **use_dem**, **use_slope**, **use_segmentation_layer**, **use_slope_stripes_channel**. At least one must be true. Use these to ablate channels (e.g. SlopeStripes-only by setting only `use_slope_stripes_channel: true`).
 
    If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
 
@@ -289,7 +293,7 @@ Open http://127.0.0.1:5001. Use it to compare runs, view metrics, and download a
 
 ## Configuration
 
-- **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs, `illumination_filter` and `illumination_include_background` (when training on sun/shadow only).
+- **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs, **input layer toggles** (`use_rgb`, `use_dem`, `use_slope`, `use_segmentation_layer`, `use_slope_stripes_channel`; at least one must be true), `illumination_filter` and `illumination_include_background` (when training on sun/shadow only).
 - **Data preparation / illumination**: `configs/data_preparation_config.yaml` – extended set (background, augmentation) and **`illumination`** (shadow/sun example tile IDs, `ambiguous_max_fraction` or `ambiguous_value_band` for tagging).
 - **Loss functions**: See [docs/loss_functions.md](docs/loss_functions.md) for descriptions of all options (`smooth_l1`, `weighted_smooth_l1`, `dice`, `iou`, `soft_iou`, `encouragement`, `focal`, `combined`).
 - **Best HP (after tuning)**: `configs/best_hyperparameters.yaml` – can be merged or used to update the main config.

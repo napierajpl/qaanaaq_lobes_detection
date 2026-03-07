@@ -127,6 +127,22 @@ def train_model_with_config(
     if use_slope_stripes_channel and paths.get("slope_stripes_channel_dir"):
         slope_stripes_channel_dir = resolve_path(Path(paths["slope_stripes_channel_dir"]), project_root)
 
+    use_rgb = config["data"].get("use_rgb", True)
+    use_dem = config["data"].get("use_dem", True)
+    use_slope = config["data"].get("use_slope", True)
+    in_channels = (
+        (3 if use_rgb else 0)
+        + (1 if use_dem else 0)
+        + (1 if use_slope else 0)
+        + (1 if use_segmentation_layer else 0)
+        + (1 if use_slope_stripes_channel else 0)
+    )
+    if in_channels < 1:
+        raise ValueError(
+            "At least one input channel must be enabled. Set one or more of: "
+            "use_rgb, use_dem, use_slope, use_segmentation_layer, use_slope_stripes_channel to true."
+        )
+
     logger.info("=== Training Configuration ===")
     logger.info(f"Mode: {mode} (tile size: {tile_size}x{tile_size}), target_mode: {target_mode}")
     logger.info(f"Filtered tiles: {filtered_tiles_path}")
@@ -147,6 +163,10 @@ def train_model_with_config(
                 "Add paths.<key>.slope_stripes_channel_dir and tile the slope-stripes raster with the same tile size/overlap."
             )
         logger.info(f"Slope-stripes channel dir: {slope_stripes_channel_dir}")
+    logger.info(
+        f"Input channels: rgb={use_rgb}, dem={use_dem}, slope={use_slope}, "
+        f"segmentation={use_segmentation_layer}, slope_stripes={use_slope_stripes_channel} -> {in_channels} channels"
+    )
 
     # Load filtered tiles
     logger.info("Loading filtered tiles...")
@@ -214,40 +234,43 @@ def train_model_with_config(
     illumination_filter = config["data"].get("illumination_filter") or "all"
     illumination_include_background = config["data"].get("illumination_include_background", False)
     if illumination_filter in ("shadow", "sun"):
-        before = len(train_tiles)
-        if illumination_include_background:
-            train_tiles = [
-                t for t in train_tiles
-                if t.get("role") == "background" or t.get("illumination") == illumination_filter
-            ]
-            logger.info(
-                f"Illumination filter '{illumination_filter}': {len(train_tiles)} train tiles (was {before}); "
-                "background tiles included."
-            )
-        else:
-            train_tiles = [t for t in train_tiles if t.get("illumination") == illumination_filter]
-            logger.info(
-                f"Illumination filter '{illumination_filter}' (no background): {len(train_tiles)} train tiles (was {before})."
-            )
+        def _matches_illumination(t: dict) -> bool:
+            if illumination_include_background and t.get("role") == "background":
+                return True
+            return t.get("illumination") == illumination_filter
 
-    # Compute normalization statistics from lobe training tiles only (exclude background/augmented for stats)
-    logger.info("Computing normalization statistics...")
-    extended_loaded = use_bg_aug and (filtered_tiles_path.parent / "extended_training_tiles.json").exists()
-    tiles_for_stats = [t for t in train_tiles if t.get("role") == "lobe"] if extended_loaded else train_tiles
-    train_feature_paths = [features_dir / tile["features_path"] for tile in tiles_for_stats]
-    normalization_stats = compute_statistics(train_feature_paths)
-    dem_mean = normalization_stats.get('dem', {}).get('mean', 'N/A')
-    dem_std = normalization_stats.get('dem', {}).get('std', 'N/A')
-    slope_mean = normalization_stats.get('slope', {}).get('mean', 'N/A')
-    slope_std = normalization_stats.get('slope', {}).get('std', 'N/A')
+        before_train = len(train_tiles)
+        before_val = len(val_tiles)
+        before_test = len(test_tiles)
+        train_tiles = [t for t in train_tiles if _matches_illumination(t)]
+        val_tiles = [t for t in val_tiles if _matches_illumination(t)]
+        test_tiles = [t for t in test_tiles if _matches_illumination(t)]
+        logger.info(
+            f"Illumination filter '{illumination_filter}': train {before_train}->{len(train_tiles)}, "
+            f"val {before_val}->{len(val_tiles)}, test {before_test}->{len(test_tiles)}"
+            + (" (background included)" if illumination_include_background else " (no background)")
+        )
 
-    dem_mean_str = f"{dem_mean:.2f}" if isinstance(dem_mean, (int, float)) else str(dem_mean)
-    dem_std_str = f"{dem_std:.2f}" if isinstance(dem_std, (int, float)) else str(dem_std)
-    slope_mean_str = f"{slope_mean:.2f}" if isinstance(slope_mean, (int, float)) else str(slope_mean)
-    slope_std_str = f"{slope_std:.2f}" if isinstance(slope_std, (int, float)) else str(slope_std)
-
-    logger.info(f"DEM stats: mean={dem_mean_str}, std={dem_std_str}")
-    logger.info(f"Slope stats: mean={slope_mean_str}, std={slope_std_str}")
+    # Compute normalization statistics from lobe training tiles only (when using DEM/Slope/RGB)
+    if use_rgb or use_dem or use_slope:
+        logger.info("Computing normalization statistics...")
+        extended_loaded = use_bg_aug and (filtered_tiles_path.parent / "extended_training_tiles.json").exists()
+        tiles_for_stats = [t for t in train_tiles if t.get("role") == "lobe"] if extended_loaded else train_tiles
+        train_feature_paths = [features_dir / tile["features_path"] for tile in tiles_for_stats]
+        normalization_stats = compute_statistics(train_feature_paths)
+        dem_mean = normalization_stats.get('dem', {}).get('mean', 'N/A')
+        dem_std = normalization_stats.get('dem', {}).get('std', 'N/A')
+        slope_mean = normalization_stats.get('slope', {}).get('mean', 'N/A')
+        slope_std = normalization_stats.get('slope', {}).get('std', 'N/A')
+        dem_mean_str = f"{dem_mean:.2f}" if isinstance(dem_mean, (int, float)) else str(dem_mean)
+        dem_std_str = f"{dem_std:.2f}" if isinstance(dem_std, (int, float)) else str(dem_std)
+        slope_mean_str = f"{slope_mean:.2f}" if isinstance(slope_mean, (int, float)) else str(slope_mean)
+        slope_std_str = f"{slope_std:.2f}" if isinstance(slope_std, (int, float)) else str(slope_std)
+        logger.info(f"DEM stats: mean={dem_mean_str}, std={dem_std_str}")
+        logger.info(f"Slope stats: mean={slope_mean_str}, std={slope_std_str}")
+    else:
+        normalization_stats = {}
+        logger.info("Skipping normalization statistics (no RGB/DEM/Slope channels).")
 
     train_subsample_ratio = config["data"].get("train_subsample_ratio", 1.0)
     if train_subsample_ratio < 1.0:
@@ -270,6 +293,9 @@ def train_model_with_config(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_dir,
         slope_stripes_base_dir=slope_stripes_channel_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
 
     # Setup device
@@ -279,13 +305,7 @@ def train_model_with_config(
     # Create model using factory (binary mode: output [0,1] via sigmoid)
     logger.info("Creating model...")
     model_config = dict(config["model"])
-    base_channels = 5
-    if use_segmentation_layer:
-        base_channels += 1
-    if use_slope_stripes_channel:
-        base_channels += 1
-    if base_channels != 5:
-        model_config["in_channels"] = base_channels
+    model_config["in_channels"] = in_channels
     if target_mode == "binary":
         model_config["proximity_max"] = 1
         model_config["output_activation"] = "sigmoid"
@@ -438,7 +458,7 @@ def train_model_with_config(
                 trial.set_user_attr("mlflow_tracking_uri", mlflow.get_tracking_uri())
                 trial.set_user_attr("mode", mode)
                 trial.set_user_attr("model_architecture", architecture)
-                trial.set_user_attr("model_in_channels", base_channels if (use_segmentation_layer or use_slope_stripes_channel) else int(config["model"].get("in_channels", 5)))
+                trial.set_user_attr("model_in_channels", in_channels)
                 trial.set_user_attr("model_out_channels", int(config["model"].get("out_channels", 1)))
                 trial.set_user_attr("training_iou_threshold", float(iou_threshold))
                 trial.set_user_attr("data_normalize_rgb", bool(config["data"].get("normalize_rgb", True)))
@@ -591,6 +611,9 @@ def train_model_with_config(
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
                     slope_stripes_base_dir=slope_stripes_channel_dir,
+                    use_rgb=use_rgb,
+                    use_dem=use_dem,
+                    use_slope=use_slope,
                 )
 
             # Unfreeze encoder if specified epoch reached
@@ -755,6 +778,9 @@ def train_model_with_config(
                                 binary_threshold=binary_threshold,
                                 segmentation_base_dir=segmentation_dir,
                                 slope_stripes_base_dir=slope_stripes_channel_dir,
+                                use_rgb=use_rgb,
+                                use_dem=use_dem,
+                                use_slope=use_slope,
                             )
                             mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                             if loss_plot_path is not None:
@@ -781,6 +807,9 @@ def train_model_with_config(
                                 segmentation_base_dir=segmentation_dir,
                                 slope_stripes_base_dir=slope_stripes_channel_dir,
                                 tile_loss=best_iou_tile_loss_so_far,
+                                use_rgb=use_rgb,
+                                use_dem=use_dem,
+                                use_slope=use_slope,
                             )
                             mlflow.log_figure(fig, "plots/best_iou_tile.png")
                             if loss_plot_path is not None:
@@ -903,6 +932,9 @@ def train_model_with_config(
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
                     slope_stripes_base_dir=slope_stripes_channel_dir,
+                    use_rgb=use_rgb,
+                    use_dem=use_dem,
+                    use_slope=use_slope,
                 )
                 mlflow.log_figure(fig, "plots/best_predicted_tile.png")
                 if loss_plot_path is not None:
@@ -925,6 +957,9 @@ def train_model_with_config(
                     segmentation_base_dir=segmentation_dir,
                     slope_stripes_base_dir=slope_stripes_channel_dir,
                     tile_loss=best_iou_tile_loss_so_far,
+                    use_rgb=use_rgb,
+                    use_dem=use_dem,
+                    use_slope=use_slope,
                 )
                 mlflow.log_figure(fig, "plots/best_iou_tile.png")
                 if loss_plot_path is not None:
@@ -956,6 +991,9 @@ def train_model_with_config(
                     binary_threshold=binary_threshold,
                     segmentation_base_dir=segmentation_dir,
                     slope_stripes_base_dir=slope_stripes_channel_dir,
+                    use_rgb=use_rgb,
+                    use_dem=use_dem,
+                    use_slope=use_slope,
                 )
                 for tid, fig in pred_figures.items():
                     mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
@@ -976,6 +1014,9 @@ def train_model_with_config(
                     segmentation_base_dir=segmentation_dir,
                     slope_stripes_base_dir=slope_stripes_channel_dir,
                     plot_options=loss_plot_options,
+                    use_rgb=use_rgb,
+                    use_dem=use_dem,
+                    use_slope=use_slope,
                 )
                 for tid, fig in channel_figures.items():
                     mlflow.log_figure(fig, f"representative_channels/{tid}.png")
@@ -1105,6 +1146,11 @@ def main():
         action="store_true",
         help="Use slope-stripes (Gabor) channel as 6th input. Requires slope_stripes_channel_dir in paths.",
     )
+    parser.add_argument(
+        "--slope-stripes-only",
+        action="store_true",
+        help="Use only the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting use_rgb/dem/slope/segmentation to false and use_slope_stripes_channel to true.",
+    )
 
     args = parser.parse_args()
 
@@ -1117,6 +1163,12 @@ def main():
     if args.tile_size is not None:
         config["data"]["tile_size"] = args.tile_size
     if args.use_slope_stripes_channel:
+        config["data"]["use_slope_stripes_channel"] = True
+    if args.slope_stripes_only:
+        config["data"]["use_rgb"] = False
+        config["data"]["use_dem"] = False
+        config["data"]["use_slope"] = False
+        config["data"]["use_segmentation_layer"] = False
         config["data"]["use_slope_stripes_channel"] = True
     if args.illumination_filter is not None:
         config["data"]["illumination_filter"] = args.illumination_filter

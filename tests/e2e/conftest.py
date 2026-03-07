@@ -26,6 +26,9 @@ def make_minimal_config(project_root: Path, out_path: Path) -> Path:
         config = yaml.safe_load(f)
     config["data"]["tile_size"] = 256
     config["data"]["use_background_and_augmentation"] = False
+    config["data"]["use_rgb"] = True
+    config["data"]["use_dem"] = True
+    config["data"]["use_slope"] = True
     config["data"]["use_segmentation_layer"] = False
     config["data"]["use_slope_stripes_channel"] = False
     config["training"]["num_epochs"] = 1

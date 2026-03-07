@@ -558,6 +558,9 @@ def _create_tile_prediction_figure(
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
+    use_rgb: bool = True,
+    use_dem: bool = True,
+    use_slope: bool = True,
 ) -> plt.Figure:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -581,6 +584,9 @@ def _create_tile_prediction_figure(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
     features, target = dataset[0]
     features_batch = features.unsqueeze(0).to(device)
@@ -636,6 +642,9 @@ def show_best_predicted_tile(
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
+    use_rgb: bool = True,
+    use_dem: bool = True,
+    use_slope: bool = True,
 ) -> plt.Figure:
     tid = tile_info.get("tile_id", "?")
     title = f"Lowest-loss tile  |  {tid}  |  loss: {loss_value:.6f}"
@@ -653,6 +662,9 @@ def show_best_predicted_tile(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
 
 
@@ -671,6 +683,9 @@ def show_highest_iou_tile(
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
     tile_loss: Optional[float] = None,
+    use_rgb: bool = True,
+    use_dem: bool = True,
+    use_slope: bool = True,
 ) -> plt.Figure:
     tid = tile_info.get("tile_id", "?")
     title = f"Highest IoU tile  |  {tid}  |  IoU: {iou_value:.4f}"
@@ -690,6 +705,9 @@ def show_highest_iou_tile(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
 
 
@@ -706,6 +724,9 @@ def create_prediction_tile_figures(
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
+    use_rgb: bool = True,
+    use_dem: bool = True,
+    use_slope: bool = True,
 ) -> Dict[str, plt.Figure]:
     from src.training.dataloader import TileDataset
     from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
@@ -735,6 +756,9 @@ def create_prediction_tile_figures(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
     figures = {}
     for i, tile_info in enumerate(rep_tiles):
@@ -815,10 +839,25 @@ def _channel_to_display(arr: np.ndarray) -> np.ndarray:
     return np.clip(a, 0, 1).astype(np.float32)
 
 
+def _segment_boundary_mask(seg: np.ndarray, nodata: float) -> np.ndarray:
+    """True where pixel differs from any 4-neighbor (segment boundary). Nodata excluded."""
+    out = np.zeros(seg.shape, dtype=bool)
+    valid = seg != nodata
+    if not np.any(valid):
+        return out
+    s = np.asarray(seg, dtype=np.float64)
+    out[:-1, :] |= valid[:-1, :] & valid[1:, :] & (s[:-1, :] != s[1:, :])
+    out[1:, :]  |= valid[1:, :] & valid[:-1, :] & (s[1:, :] != s[:-1, :])
+    out[:, :-1] |= valid[:, :-1] & valid[:, 1:] & (s[:, :-1] != s[:, 1:])
+    out[:, 1:]  |= valid[:, 1:] & valid[:, :-1] & (s[:, 1:] != s[:, :-1])
+    return out
+
+
 def _load_segmentation_for_display(
     segmentation_base_dir: Path, tile_id: str,
-) -> Optional[np.ndarray]:
-    """Load segmentation tile as 0-1 array for display; None if missing."""
+) -> Optional[tuple[np.ndarray, np.ndarray, int]]:
+    """Load segmentation tile for display. Returns (display_array, boundary_mask, n_unique) or None.
+    Display array: segment IDs mapped to 0-1 discretely. boundary_mask: True at segment edges."""
     seg_path = segmentation_base_dir / f"{tile_id}.tif"
     if not seg_path.exists():
         return None
@@ -827,13 +866,14 @@ def _load_segmentation_for_display(
         nd = float(src.nodata if src.nodata is not None else -9999.0)
     seg = np.asarray(seg, dtype=np.float64)
     valid = seg != nd
-    out = np.zeros_like(seg)
+    out = np.zeros_like(seg, dtype=np.float32)
+    n_uniq = 0
     if np.any(valid):
-        v = seg[valid]
-        v_max = float(np.max(v))
-        if v_max > 0:
-            out[valid] = v / v_max
-    return np.clip(out, 0, 1).astype(np.float32)
+        v = seg[valid].astype(np.int64)
+        n_uniq = len(np.unique(v))
+        out[valid] = (v % 64) / 63.0
+    boundaries = _segment_boundary_mask(seg, nd)
+    return (np.clip(out, 0, 1).astype(np.float32), boundaries, n_uniq)
 
 
 def create_representative_tiles_channel_figures(
@@ -850,6 +890,9 @@ def create_representative_tiles_channel_figures(
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
     plot_options: Optional[Dict[str, Any]] = None,
+    use_rgb: bool = True,
+    use_dem: bool = True,
+    use_slope: bool = True,
 ) -> Dict[str, plt.Figure]:
     """
     For each representative tile: one figure with RGB, DEM, Slope, [Segmentation], [SlopeStripes],
@@ -879,6 +922,9 @@ def create_representative_tiles_channel_figures(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
     info_lines = _build_training_params_info_lines(plot_options)
     figures = {}
@@ -906,9 +952,11 @@ def create_representative_tiles_channel_figures(
         mn_sl, mx_sl = float(np.nanmin(raw_slope)), float(np.nanmax(raw_slope))
         panels.append(("Slope", (slope_disp, f"{mn_sl:.1f}–{mx_sl:.1f}"), "gray_label"))
         seg_used = segmentation_base_dir is not None
-        seg_arr = _load_segmentation_for_display(segmentation_base_dir, tid) if seg_used else None
-        if seg_arr is not None:
-            panels.append(("Segmentation", _channel_to_display(seg_arr), "gray"))
+        seg_result = _load_segmentation_for_display(segmentation_base_dir, tid) if seg_used else None
+        if seg_result is not None:
+            seg_arr, seg_boundaries, n_seg = seg_result
+            seg_title = f"Segmentation ({n_seg} segments)"
+            panels.append((seg_title, ("segmentation_contours", _channel_to_display(seg_arr), seg_boundaries), "segmentation_contours"))
         else:
             h, w = raw_dem.shape
             placeholder = np.zeros((h, w), dtype=np.float32)
@@ -926,6 +974,13 @@ def create_representative_tiles_channel_figures(
             ax = axes_flat[slot_idx]
             if kind == "rgb":
                 ax.imshow(data)
+                ax.set_title(title)
+            elif kind == "segmentation_contours":
+                _, gray_arr, boundary_mask = data
+                ax.imshow(gray_arr, cmap="gray")
+                overlay = np.ma.masked_where(~boundary_mask, np.ones_like(boundary_mask, dtype=np.float32))
+                white = mcolors.ListedColormap([[1, 1, 1, 1]])
+                ax.imshow(overlay, cmap=white, vmin=0, vmax=1, alpha=0.85)
                 ax.set_title(title)
             elif kind == "gray":
                 im = ax.imshow(data, cmap="gray")

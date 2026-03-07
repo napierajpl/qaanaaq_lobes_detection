@@ -19,51 +19,47 @@ logger = logging.getLogger(__name__)
 
 class InputAdapter(nn.Module):
     """
-    Adapts 5-channel input (RGB + DEM + Slope) to 3-channel for pretrained encoder.
-
-    Uses learnable fusion to preserve information from all channels.
+    Adapts variable-channel input to 3-channel for pretrained encoder.
+    Supports: 1 channel (e.g. SlopeStripes only), 3 (RGB only), 5 (RGB+DEM+Slope), or more.
     """
 
     def __init__(self, in_channels: int = 5, out_channels: int = 3):
-        """
-        Initialize input adapter.
-
-        Args:
-            in_channels: Number of input channels (5 = RGB+DEM+Slope, 6 = +segmentation)
-            out_channels: Number of output channels (default: 3 for RGB)
-        """
         super().__init__()
-        aux_channels = in_channels - 3  # non-RGB: 2 (DEM+Slope) or 3 (+segmentation)
-        self.rgb_conv = nn.Conv2d(3, 3, kernel_size=1)
-        self.dem_slope_conv = nn.Conv2d(aux_channels, 3, kernel_size=1)
-        self.fusion = nn.Conv2d(6, out_channels, kernel_size=1)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        if in_channels >= 4:
+            self.rgb_conv = nn.Conv2d(3, 3, kernel_size=1)
+            self.dem_slope_conv = nn.Conv2d(in_channels - 3, 3, kernel_size=1)
+            self.fusion = nn.Conv2d(6, out_channels, kernel_size=1)
+            self._mode = "rgb_aux"
+        elif in_channels == 3:
+            self.rgb_conv = nn.Conv2d(3, out_channels, kernel_size=1)
+            self.dem_slope_conv = None
+            self.fusion = None
+            self._mode = "rgb_only"
+        else:
+            self.single_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+            self.rgb_conv = None
+            self.dem_slope_conv = None
+            self.fusion = None
+            self._mode = "single"
         self.bn = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Args:
-            x: Input tensor [B, 5, H, W] (RGB + DEM + Slope)
-
-        Returns:
-            Adapted tensor [B, 3, H, W]
-        """
-        # Split into RGB and auxiliary (DEM + Slope [+ optional segmentation])
-        rgb = x[:, :3, :, :]
-        dem_slope = x[:, 3:, :, :]
-
-        # Process separately
-        rgb_features = self.rgb_conv(rgb)
-        dem_slope_features = self.dem_slope_conv(dem_slope)
-
-        # Concatenate and fuse
-        fused = torch.cat([rgb_features, dem_slope_features], dim=1)
-        output = self.fusion(fused)
+        if self._mode == "rgb_aux":
+            rgb = x[:, :3, :, :]
+            dem_slope = x[:, 3:, :, :]
+            rgb_features = self.rgb_conv(rgb)
+            dem_slope_features = self.dem_slope_conv(dem_slope)
+            fused = torch.cat([rgb_features, dem_slope_features], dim=1)
+            output = self.fusion(fused)
+        elif self._mode == "rgb_only":
+            output = self.rgb_conv(x)
+        else:
+            output = self.single_conv(x)
         output = self.bn(output)
         output = self.relu(output)
-
         return output
 
 

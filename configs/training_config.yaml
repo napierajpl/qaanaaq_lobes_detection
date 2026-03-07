@@ -19,7 +19,7 @@ model:
     name: "resnet50"  # Options: "resnet50", "resnet152", "swin_v2_base", "swin_v2_tiny"
     pretrained: true  # Use pretrained weights from SatlasPretrain
     freeze_encoder: true  # Freeze encoder initially, unfreeze after convergence
-    unfreeze_after_epoch: 50  # Unfreeze encoder after this epoch (0 = never unfreeze)
+    unfreeze_after_epoch: 0  # Unfreeze encoder after this epoch (0 = never unfreeze)
   decoder_dropout: 0.2  # Dropout in decoder only (encoder has no dropout)
   # Optional SE + PPM (Gully-ERFNet style). Ablation: set use_se/use_ppm true/false as needed.
   use_se: true
@@ -34,8 +34,8 @@ model:
 
 training:
   batch_size: 16
-  num_epochs: 35 # Increased from 50 - U-Net typically needs 100+ epochs
-  learning_rate: 0.00001
+  num_epochs: 150 # Increased from 50 - U-Net typically needs 100+ epochs
+  learning_rate: 0.00002
   optimizer: "Adam"
   # Loss function options:
   #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
@@ -48,7 +48,7 @@ training:
   #   - "combined": IoU + Weighted Smooth L1; best val loss in tuning, more stable (diary: combined preferred).
   #   - "acl": Adaptive Correction Loss (Gully-ERFNet): λ·Dice + (1−λ)·Focal; linear structures, imbalance.
   #   See docs/loss_functions.md for full descriptions and config params.
-  loss_function: "bce"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
+  loss_function: "acl"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
   weight_decay: 0.001  # Increased from 0.0001 to reduce overfitting
   # Weighted loss parameters (for weighted_smooth_l1 and combined)
   lobe_weight: 5.0  # Weight for lobe pixels (value >= threshold) - not used with encouragement
@@ -74,12 +74,12 @@ training:
   iou_threshold: 5.0  # Pixels with value >= this are considered lobes (lower = easier task)
   # Learning rate scheduler
   lr_scheduler: "ReduceLROnPlateau"
-  lr_scheduler_patience: 5
-  lr_scheduler_factor: 0.8
-  lr_scheduler_min_lr: 0.0001
+  lr_scheduler_patience: 4
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 0.00005
   # Early stopping
-  early_stopping_patience: 20
-  early_stopping_min_delta: 0.00001
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0
   # Gradient clipping (for stability)
   max_grad_norm: 1.0
 
@@ -92,14 +92,22 @@ data:
   normalize_rgb: true
   standardize_dem: true
   standardize_slope: true
-  # Optional 6th input channel: segmentation layer (OBIA-style segment IDs). Requires paths.<key>.segmentation_dir.
-  use_segmentation_layer: true
-  # Optional channel: slope-stripes (coherence × slope alignment, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
+  # Which input channels to use (at least one must be true). Order: RGB, DEM, Slope, Segmentation, SlopeStripes.
+  use_rgb: false
+  use_dem: false
+  use_slope: false
+  # Optional: segmentation layer (OBIA-style segment IDs). Requires paths.<key>.segmentation_dir.
+  use_segmentation_layer: false
+  # Optional: slope-stripes (Gabor, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
   use_slope_stripes_channel: true
   # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).
   use_background_and_augmentation: false
   # Subsampling: use a random subset of train tiles each epoch (0.0–1.0).
   train_subsample_ratio: 0.6
+  # Illumination filter: train only on shadow or sun tiles (tiles inside boundary, tagged by add_illumination_tags).
+  # null or "all" = use all tiles; "shadow" = only shadow; "sun" = only sun. Background excluded unless below is true.
+  illumination_filter: "sun"
+  illumination_include_background: false  # if true, include background tiles when illumination_filter is sun/shadow
 # Representative tiles for post-training prediction visualization (logged to MLflow).
 # List tile indices (int) and/or tile_id strings (e.g. "tile_01234"). Empty list = skip.
 # 256x256: dev has 36 tiles (tile_0000..tile_0035); production has many more (use indices or tile_id).

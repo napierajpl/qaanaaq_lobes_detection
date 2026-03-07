@@ -228,6 +228,9 @@ class TileDataset(Dataset):
         binary_threshold: float = 1.0,
         segmentation_base_dir: Optional[Path] = None,
         slope_stripes_base_dir: Optional[Path] = None,
+        use_rgb: bool = True,
+        use_dem: bool = True,
+        use_slope: bool = True,
     ):
         self.tile_list = tile_list
         self.features_base_dir = Path(features_base_dir)
@@ -239,6 +242,9 @@ class TileDataset(Dataset):
         self.binary_threshold = binary_threshold
         self.segmentation_base_dir = Path(segmentation_base_dir) if segmentation_base_dir else None
         self.slope_stripes_base_dir = Path(slope_stripes_base_dir) if slope_stripes_base_dir else None
+        self.use_rgb = use_rgb
+        self.use_dem = use_dem
+        self.use_slope = use_slope
 
     def __len__(self) -> int:
         return len(self.tile_list)
@@ -251,70 +257,63 @@ class TileDataset(Dataset):
             Tuple of (features, target) as tensors
         """
         tile_info = self.tile_list[idx]
-
-        # Load feature tile (5 bands: RGB + DEM + Slope)
-        # Handle both absolute and relative paths (normalize Windows backslashes)
+        tile_id = tile_info.get("tile_id") or Path(tile_info["features_path"]).stem
         features_path_str = tile_info["features_path"].replace("\\", "/")
-        if Path(features_path_str).is_absolute():
-            features_path = Path(features_path_str)
+        features_path = Path(features_path_str) if Path(features_path_str).is_absolute() else self.features_base_dir / features_path_str
+
+        channel_list: List[np.ndarray] = []
+
+        if self.use_rgb or self.use_dem or self.use_slope:
+            with rasterio.open(features_path) as src:
+                all_bands = src.read()  # (5, H, W)
+            h, w = all_bands.shape[1], all_bands.shape[2]
+            if self.use_rgb:
+                rgb = normalize_rgb(all_bands[0:3])
+                channel_list.append(rgb)
+            if self.use_dem:
+                dem_mean = self.normalization_stats.get("dem", {}).get("mean")
+                dem_std = self.normalization_stats.get("dem", {}).get("std")
+                dem, _, _ = standardize_dem(all_bands[3:4], mean=dem_mean, std=dem_std)
+                channel_list.append(dem)
+            if self.use_slope:
+                slope_mean = self.normalization_stats.get("slope", {}).get("mean")
+                slope_std = self.normalization_stats.get("slope", {}).get("std")
+                slope, _, _ = standardize_slope(all_bands[4:5], mean=slope_mean, std=slope_std)
+                channel_list.append(slope)
         else:
-            features_path = self.features_base_dir / features_path_str
+            h, w = self.tile_size, self.tile_size
 
-        with rasterio.open(features_path) as src:
-            features = src.read()  # Shape: (5, H, W)
-
-        # Load target tile (1 band: proximity map)
-        targets_path_str = tile_info["targets_path"].replace("\\", "/")
-        if Path(targets_path_str).is_absolute():
-            targets_path = Path(targets_path_str)
-        else:
-            targets_path = self.targets_base_dir / targets_path_str
-
-        with rasterio.open(targets_path) as src:
-            target = src.read(1)  # Shape: (H, W)
-
-        assert features.shape[1] == self.tile_size and features.shape[2] == self.tile_size, \
-            f"Feature tile size mismatch: {features.shape[1]}x{features.shape[2]}, expected {self.tile_size}x{self.tile_size}"
-        assert target.shape[0] == self.tile_size and target.shape[1] == self.tile_size, \
-            f"Target tile size mismatch: {target.shape}, expected {self.tile_size}x{self.tile_size}"
-
-        # Normalize features
-        # RGB bands (0, 1, 2)
-        features[0:3] = normalize_rgb(features[0:3])
-
-        # DEM band (3)
-        dem_mean = self.normalization_stats.get("dem", {}).get("mean")
-        dem_std = self.normalization_stats.get("dem", {}).get("std")
-        features[3], _, _ = standardize_dem(features[3], mean=dem_mean, std=dem_std)
-
-        # Slope band (4)
-        slope_mean = self.normalization_stats.get("slope", {}).get("mean")
-        slope_std = self.normalization_stats.get("slope", {}).get("std")
-        features[4], _, _ = standardize_slope(features[4], mean=slope_mean, std=slope_std)
-
-        # Optional 6th channel: segmentation layer
         if self.segmentation_base_dir is not None:
-            tile_id = tile_info.get("tile_id")
-            if not tile_id:
-                tile_id = Path(tile_info["features_path"]).stem
             seg_path = self.segmentation_base_dir / f"{tile_id}.tif"
             if not seg_path.exists():
                 raise FileNotFoundError(f"Segmentation tile not found: {seg_path}")
             seg = _load_and_normalize_segmentation_tile(seg_path, self.tile_size)
-            features = np.concatenate([features, seg], axis=0)
+            channel_list.append(seg)
 
-        # Optional channel: slope-stripes (0-1, no normalization)
         if self.slope_stripes_base_dir is not None:
-            tile_id = tile_info.get("tile_id")
-            if not tile_id:
-                tile_id = Path(tile_info["features_path"]).stem
             stripe_path = self.slope_stripes_base_dir / f"{tile_id}.tif"
             if not stripe_path.exists():
                 raise FileNotFoundError(f"Slope-stripes tile not found: {stripe_path}")
             with rasterio.open(stripe_path) as src:
                 stripe = src.read(1)
             stripe = np.clip(np.asarray(stripe, dtype=np.float32), 0.0, 1.0)[np.newaxis, :, :]
-            features = np.concatenate([features, stripe], axis=0)
+            if self.use_rgb or self.use_dem or self.use_slope:
+                pass
+            else:
+                h, w = stripe.shape[1], stripe.shape[2]
+            channel_list.append(stripe)
+
+        features = np.concatenate(channel_list, axis=0) if channel_list else np.zeros((1, self.tile_size, self.tile_size), dtype=np.float32)
+
+        targets_path_str = tile_info["targets_path"].replace("\\", "/")
+        targets_path = Path(targets_path_str) if Path(targets_path_str).is_absolute() else self.targets_base_dir / targets_path_str
+        with rasterio.open(targets_path) as src:
+            target = src.read(1)
+
+        assert features.shape[1] == self.tile_size and features.shape[2] == self.tile_size, \
+            f"Feature tile size mismatch: {features.shape[1]}x{features.shape[2]}, expected {self.tile_size}x{self.tile_size}"
+        assert target.shape[0] == self.tile_size and target.shape[1] == self.tile_size, \
+            f"Target tile size mismatch: {target.shape}, expected {self.tile_size}x{self.tile_size}"
 
         # Convert to tensors
         features_tensor = torch.from_numpy(features).float()
@@ -428,6 +427,9 @@ def create_dataloaders(
     binary_threshold: float = 1.0,
     segmentation_base_dir: Optional[Path] = None,
     slope_stripes_base_dir: Optional[Path] = None,
+    use_rgb: bool = True,
+    use_dem: bool = True,
+    use_slope: bool = True,
 ) -> Tuple[DataLoader, DataLoader]:
     train_dataset = TileDataset(
         train_tiles,
@@ -440,6 +442,9 @@ def create_dataloaders(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
 
     val_dataset = TileDataset(
@@ -452,6 +457,9 @@ def create_dataloaders(
         binary_threshold=binary_threshold,
         segmentation_base_dir=segmentation_base_dir,
         slope_stripes_base_dir=slope_stripes_base_dir,
+        use_rgb=use_rgb,
+        use_dem=use_dem,
+        use_slope=use_slope,
     )
 
     train_loader = DataLoader(
