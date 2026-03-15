@@ -5,6 +5,44 @@ from typing import Optional
 import numpy as np
 
 
+def place_random_parentheses_on_tile(
+    features: np.ndarray,
+    target: np.ndarray,
+    shape_height_px: int,
+    shapes_per_tile: int,
+    rng: np.random.Generator,
+) -> None:
+    """Place shapes_per_tile random ( and ) shapes on features (modify first 3 bands to black) and target (20 inside)."""
+    H, W = target.shape
+    max_side = min(H, W) - 10
+    use_height = min(shape_height_px, max_side) if max_side > 0 else shape_height_px
+    chars = ["(", ")"]
+    masks = [make_parenthesis_mask(c, use_height) for c in chars]
+    for _ in range(shapes_per_tile):
+        idx = rng.integers(0, len(masks))
+        mask = masks[idx].copy()
+        angle = rng.uniform(0, 360)
+        mask = rotate_mask(mask, angle)
+        mh, mw = mask.shape
+        if mh > H or mw > W:
+            from scipy.ndimage import zoom
+            sy, sx = (H - 2) / mh, (W - 2) / mw
+            scale = min(sy, sx, 1.0)
+            if scale < 1.0:
+                mask = zoom(mask.astype(float), scale, order=0)
+                mask = (mask > 0.5).astype(np.uint8)
+            mh, mw = mask.shape
+        if mh > H or mw > W:
+            continue
+        top = rng.integers(0, max(1, H - mh + 1))
+        left = rng.integers(0, max(1, W - mw + 1))
+        roi_r = slice(top, top + mh)
+        roi_c = slice(left, left + mw)
+        where = mask > 0
+        features[0:3, roi_r, roi_c][:, where] = 0
+        target[roi_r, roi_c] = np.where(where, 20, target[roi_r, roi_c])
+
+
 def make_parenthesis_mask(
     char: str,
     height_px: int,

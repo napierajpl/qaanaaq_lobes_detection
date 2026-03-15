@@ -1,0 +1,31 @@
+---
+description: Python code style, file size, and script refactoring conventions
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python and scripts
+
+## Code style
+
+- **Imports** at the top of the file; ask before putting them elsewhere.
+- **Fast fail**: do not add silent defaults for missing values; fail explicitly (KeyError, ValueError). Add fallbacks only after confirmation.
+- **Control flow**: avoid chained if/elif; use loops, mappings, or polymorphism. Prefer early returns and flat structure. Extract helpers; avoid copy-paste.
+- **Exceptions**: catch only what you can handle meaningfully. Prefer explicit validation.
+- **Typing**: use type hints by default. Use **logging** instead of prints for production code.
+
+## File size and structure
+
+- **Scrutinize files over ~200 lines**: split, extract helpers, or move logic under `src/` so scripts stay thin orchestration. Alert when a file grows beyond ~300 lines.
+- Prefer **factories or registries** over long if/elif for components (e.g. loss, model) from config.
+- Extract setup and logging into small named functions; keep main flow linear.
+- Centralize shared config/HP and domain helpers in `src/utils/` or a dedicated module.
+- Structure: `src/<package>/`, `configs/`, `scripts/` (thin only), `tests/`. Keep business logic out of scripts and notebooks.
+
+## Refactoring scripts
+
+- **Script list and status**: See `personal/docs/refactoring_log.md`.
+- Apply consistently: `get_project_root(Path(__file__))`; open text files with `encoding="utf-8"`; use `path_key` from `data.tile_size` when config has both paths (e.g. `path_key = mode if tile_size == 256 else f"{mode}_512"`).
+- Extract repeated path/tile_dir logic into helpers; CSV/config headers into constants; “save results” into small functions.
+- Log non-obvious choices in `personal/docs/refactoring_log.md`; resolve with user after the pass.
+- Scripts without project root or file I/O can stay Pending. For scripts >200 lines, consider a second pass; mark status in refactoring_log.

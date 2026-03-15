@@ -267,12 +267,15 @@ def main():
             pbar.update(1)
             rel_feat = str(Path(AUGMENTED_SUBDIR) / f"{aug_id}.tif")
             rel_tgt = str(Path(AUGMENTED_SUBDIR) / f"{aug_id}.tif")
-            augmented_entries.append({
+            aug_entry = {
                 "tile_id": aug_id,
                 "features_path": rel_feat,
                 "targets_path": rel_tgt,
                 "role": "augmented_lobe",
-            })
+            }
+            if "illumination" in tile:
+                aug_entry["illumination"] = tile["illumination"]
+            augmented_entries.append(aug_entry)
     pbar.close()
 
     lobe_with_role = [dict(t) for t in train_tiles]

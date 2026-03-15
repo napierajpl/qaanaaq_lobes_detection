@@ -36,3 +36,16 @@ augmentation:
   rotations: 4  # 0°, 90°, 180°, 270° per tile
   contrast_range: [0.8, 1.2]
   saturation_range: [0.8, 1.2]
+
+# Illumination: use scripts/classify_tiles_by_shadow_mask.py (recommended).
+# Shadow mask: polygons = shadow, outside = sun; tiles with >30% minority class = mixed.
+illumination:
+  shadow_mask: "data/raw/vector/shadow_mask.shp"
+  mixed_threshold: 0.3  # tile is mixed when > this fraction is the minority class
+  # Legacy (add_illumination_tags.py): illumination_vector, shadow_example_ids, sun_example_ids, etc.
+  illumination_vector: null
+  illumination_attribute: "illumination"
+  shadow_example_ids: [7039, 6617, 6364, 6114, 7547, 4415, 4166, 3486]
+  sun_example_ids: [1618, 1706, 2298, 3397, 3740, 4064, 5269, 6376]
+  ambiguous_max_fraction: 0.2
+  ambiguous_value_band: 0.08

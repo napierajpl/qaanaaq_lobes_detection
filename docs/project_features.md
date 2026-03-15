@@ -306,7 +306,7 @@ Options: `--dev`, `--n-trials N`, `--skip-extended`, `--skip-tuning`.
 
 ## 14. Implemented Features (from backlog)
 
-**Purpose:** Record which improvements from `docs/improvements_backlog.md` are already done so we avoid re-implementing and can see what is in place.
+**Purpose:** Record which improvements from the project backlog (maintained internally) are already done so we avoid re-implementing and can see what is in place.
 
 Items below were moved here from the backlog after verification in the codebase.
 
@@ -319,7 +319,7 @@ Items below were moved here from the backlog after verification in the codebase.
   - Encoder freeze/unfreeze support (e.g. freeze initially, fine-tune after convergence).
   - Model factory for architecture switching (`unet` vs `satlaspretrain_unet`).
   - Support for ResNet50, ResNet152, Swin-v2-Base, Swin-v2-Tiny.
-  - Plans: `docs/implementation_plans/satlaspretrain_integration.md`, `docs/implementation_plans/satlaspretrain_implementation_summary.md`.
+  - Plans: internal implementation plans (satlaspretrain integration and summary).
 - **SE + Pyramid Pooling Module (PPM)** — Backlog item 5.
   - Optional Squeeze-and-Excitation (SE) and Pyramid Pooling Module (PPM) on deepest encoder feature (enc4) before bottleneck. Config: `model.use_se`, `model.use_ppm` (flat); optional `ppm_bins`, `se_reduction`. Modules created only when enabled; ablation: baseline (both false), +SE, +PPM, +both. Implementation: `src/models/se_ppm.py`, integrated in `SatlasPretrainUNet`. Not in Optuna search space.
 
@@ -340,5 +340,5 @@ Items below were moved here from the backlog after verification in the codebase.
 ### Research / literature
 
 - **Literature search: similar tasks (linear structures, imbalance)** — Backlog item 18.
-  - Deliverable: `docs/literature/similar_tasks_imbalance_linear_structures.md`.
+  - Deliverable: internal literature note (similar tasks, linear structures, imbalance).
   - Content: 4 papers (ResUNet-a, Boundary-Aware U-Net glacier, UFL, Gully-ERFNet); priorities in backlog aligned with “Next steps.”

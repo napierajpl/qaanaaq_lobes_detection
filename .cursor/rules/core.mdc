@@ -1,0 +1,42 @@
+---
+description: Core principles, workflow, tooling, and safety for this repo
+alwaysApply: true
+---
+
+# Core rules
+
+Code quality beats speed. If rules conflict or requirements are unclear, stop and ask.
+
+## Language and runtime
+
+- Use **Python 3.11+**. Prefer standard library first, then well-known packages.
+- Write **short functions** with **meaningful names** and **one responsibility**.
+- Follow **OOP and Clean Code**: single responsibility, explicit dependencies, no hidden side effects, readable > clever.
+
+## Tooling and stack
+
+- **Poetry** for dependencies; use virtual environments.
+- Data: prefer **pandas** and **sql**; **do not use Spark** unless requested.
+- **YAML** for user-facing config; logic reads config, no hardcoded behavior.
+- Assume **pre-commit** and common linters; code must be compatible.
+
+## Workflow
+
+- For **complex or multi-step** prompts: write a clear plan first, identify unclear points, **ask before coding**. Do not rush into implementation.
+- **Test-driven**: prefer pytest; tests deterministic, fast, focused. Refactor only after tests pass.
+- When uncertain: **ask** instead of guessing. Validate at boundaries; prefer fast fail over silent defaults.
+- Check **official documentation** when unsure; never present guesses as facts.
+
+## Reuse and structure
+
+- Check if similar functionality exists. Prefer reuse or refactor over duplication.
+- **Personal/experimental**: place in `personal/` (gitignored). Do not treat as production code. Implementation plans and working .md that are not user docs go in personal folder.
+
+## CI/CD and portability
+
+- Assume **GitLab CI/CD** and/or **Docker**. Use relative paths, env vars, config, **pathlib**. Assume **git bash** and GitLab. No absolute local paths or OS-specific assumptions.
+
+## Git and communication
+
+- Never commit or push without **explicit user consent**. Propose a plan first for wide-ranging changes.
+- Be **concise and concrete**. State assumptions, tradeoffs, open questions. Ask for confirmation when assumptions were required.

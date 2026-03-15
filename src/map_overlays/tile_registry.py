@@ -203,6 +203,8 @@ class TileRegistry:
                         "features": tile_info.get("features_path", ""),
                         "targets": tile_info.get("targets_path", ""),
                     }
+                    if "illumination" in tile_info:
+                        entry["illumination"] = tile_info["illumination"]
 
                     # Add baseline metrics if available
                     if "target_stats" in tile_info and "baseline_metrics" in tile_info["target_stats"]:

@@ -96,6 +96,7 @@ qaanaaq_lobes_detection/
 ├── personal/                      # Temporary/experimental scripts (gitignored)
 │
 ├── docs/                          # Documentation
+│   ├── readme_assets/             # Images and illustrations for README.md
 │   ├── data_sources.md           # Data documentation
 │   ├── pipeline.md               # Pipeline documentation
 │   └── api.md                    # API documentation

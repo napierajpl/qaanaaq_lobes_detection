@@ -92,12 +92,13 @@ def production_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
             ],
         ),
         (
-            "  Generating slope-stripes channel (RGB + DEM, Gabor freq=0.15 sigma=5.0)...",
+            "  Generating slope-stripes channel (RGB + DEM, Gabor freq=0.15 sigma=5.0 align=5)...",
             [
                 "poetry", "run", "python", "scripts/create_slope_stripes_channel.py",
                 "--method", "gabor",
                 "--gabor-frequency", "0.15",
                 "--gabor-sigma", "5.0",
+                "--alignment-power", "5",
                 "-i", "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif",
                 "-d", "data/processed/raster/dem_from_arcticDEM_resampled.tif",
                 "-o", "data/processed/raster/slope_stripes_channel.tif",
@@ -224,12 +225,13 @@ def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
             ],
         ),
         (
-            "  Generating slope-stripes channel (cropped RGB + DEM, Gabor freq=0.15 sigma=5.0)...",
+            "  Generating slope-stripes channel (cropped RGB + DEM, Gabor freq=0.15 sigma=5.0 align=5)...",
             [
                 "poetry", "run", "python", "scripts/create_slope_stripes_channel.py",
                 "--method", "gabor",
                 "--gabor-frequency", "0.15",
                 "--gabor-sigma", "5.0",
+                "--alignment-power", "5",
                 "-i", "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif",
                 "-d", "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif",
                 "-o", "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif",

@@ -4,9 +4,17 @@ CNN pipeline for detecting **solifluction lobes** from high-resolution aerial im
 
 **What are solifluction lobes?** Solifluction is the slow downslope flow of water-saturated soil in periglacial regions. Lobes are tongue-shaped or arcuate landforms created by this process; they appear as distinct curved or stepped features on the ground. The data used here comes from **northern Greenland, near the town of Qaanaaq**.
 
-![Solifluction lobes (pink outlines) in the Qaanaaq region, N Greenland — aerial view with contour lines](screenshots/Zrzut%20ekranu%202026-01-23%20173303.png)
+![Solifluction lobes (pink outlines) in the Qaanaaq region, N Greenland — aerial view with contour lines](docs/readme_assets/qaanaaq_lobes_example.png)
 
 *Example from the dataset: barren periglacial terrain with solifluction lobes outlined in pink; contour lines show elevation. Northern Greenland, near Qaanaaq.*
+
+![Greenland — location of the research area](docs/readme_assets/qaanaaq_location_general.png)
+
+*Greenland with the research area (Qaanaaq region) indicated.*
+
+![Northern Greenland — detailed view with Qaanaaq](docs/readme_assets/qaanaq_location_detailed_view_with_pituffik.png)
+
+*Detailed map of northern Greenland showing where Qaanaaq is.*
 
 ## Setup
 
@@ -28,11 +36,15 @@ See `pyproject.toml` for full dependencies. Spatial reference: EPSG:3413 (see `c
 
 **Optional (segmentation layer):** `pip install scikit-image` — required only for `create_segmentation_layer.py` (not in Poetry to avoid dependency conflicts).
 
+**QGIS:** We use [QGIS](https://qgis.org/) to **edit vector layers** (e.g. research boundary, shadow mask, lobe outlines) and as a **desktop GIS to browse terrain**, inspect rasters and vectors, and check the extent of layers and tiles. Scripts output shapefiles and GeoJSON with optional QML styles for use in QGIS.
+
 ---
 
 ## Research boundary (AOI)
 
-Many steps can be limited to a **research boundary** (area of interest) so processing and training use only that region.
+Limiting work to a **research boundary** (area of interest) keeps processing and training focused on the region you care about: lower cost, consistent extent for manual edits (e.g. lobe outlines, shadow mask), and the same AOI used for synthetic shape placement and tile filtering. Many steps can use this boundary so only that region is processed or trained on.
+
+![Research boundary (AOI) over imagery](docs/readme_assets/research_boundary.png)
 
 - **Boundary file:** `data/raw/vector/research_boundary.shp` — create in QGIS (or use another vector). Used by default where applicable.
 - **Synthetic parenthesis:** Placement is inside the boundary only (script uses this file by default).
@@ -51,18 +63,40 @@ Use the output with `-b` in scripts that accept a boundary.
 
 ## Tile registry
 
-A **tile registry** (`tile_registry.json`) is a single source of truth for tile metadata: geographic bounds, filtering status, train/val/test split, and whether each tile lies inside the research boundary. It is used to limit training to the AOI without opening every GeoTIFF.
+**Purpose of tiling:** The source rasters (imagery, DEM, slope, etc.) are too large to feed to the CNN at once. We split them into fixed-size **tiles** (e.g. 256×256 or 512×512 pixels) so the model trains on manageable patches; overlap between tiles keeps continuity at edges.
+
+**How tiles are created:** Scripts (e.g. `create_tiles.py` or the full `prepare_training_data.py`) slide a grid over the source rasters with a given tile size and overlap, writing one feature GeoTIFF (and matching target) per tile. Filtering drops invalid tiles; the **tile registry** is then built from the filtered list and stores metadata for each tile without having to open every file.
+
+![Example 512×512 tile grid over imagery](docs/readme_assets/tiles_512x512_example.png)
+
+A **tile registry** (`tile_registry.json`) is a single source of truth for that metadata: geographic bounds, filtering status, train/val/test split, and whether each tile lies inside the research boundary. It is used to limit training to the AOI without opening every GeoTIFF.
 
 **What’s in it**
 
 - **Metadata:** `source_raster`, `tile_size`, `overlap`, `crs`, `created`, `last_updated`.
-- **Per tile:** `tile_id`, `tile_idx`, `geographic_bounds` (minx, miny, maxx, maxy), `pixel_bounds` (row/col in source raster), `filtering` (e.g. `is_valid`, `rgb_valid`, `has_targets`), `split` (train / val / test). Optional: `paths` (features/targets), `baseline_metrics`, **`inside_boundary`** (true/false – set when the registry is built or updated with a boundary), **`illumination`** and **`illumination_metrics`** (shadow/sun/ambiguous – set by `add_illumination_tags.py`).
+- **Per tile:** `tile_id`, `tile_idx`, `geographic_bounds` (minx, miny, maxx, maxy), `pixel_bounds` (row/col in source raster), `filtering` (e.g. `is_valid`, `rgb_valid`, `has_targets`), `split` (train / val / test). Optional: `paths` (features/targets), `baseline_metrics`, `**inside_boundary`** (true/false – set when the registry is built or updated with a boundary), `**illumination**` and `**illumination_metrics**` (shadow/sun/ambiguous – set by `add_illumination_tags.py`).
+
+
+Example tile entry (one tile from the registry):
+
+```json
+{
+  "tile_id": "tile_0042",
+  "tile_idx": 42,
+  "geographic_bounds": { "minx": 123456.0, "miny": 7654321.0, "maxx": 123567.0, "maxy": 7654432.0 },
+  "pixel_bounds": { "row_start": 0, "row_end": 512, "col_start": 2048, "col_end": 2560 },
+  "filtering": { "is_valid": true, "rgb_valid": true, "has_targets": true },
+  "split": "train",
+  "inside_boundary": true,
+  "illumination": "sun"
+}
+```
+
 
 **How it’s created**
 
 - **New registry (train / train_512):**
-  `create_tile_registry.py` builds the registry from `filtered_tiles.json` and the source raster (or feature tiles). Use `--boundary data/raw/vector/research_boundary.shp` to set `inside_boundary` for each tile.
-
+`create_tile_registry.py` builds the registry from `filtered_tiles.json` and the source raster (or feature tiles). Use `--boundary data/raw/vector/research_boundary.shp` to set `inside_boundary` for each tile.
   ```bash
   poetry run python scripts/create_tile_registry.py \
     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
@@ -71,22 +105,19 @@ A **tile registry** (`tile_registry.json`) is a single source of truth for tile 
     --output data/processed/tiles/train_512/tile_registry.json \
     --tile-size 512 --boundary data/raw/vector/research_boundary.shp
   ```
-
 - **Existing registry (add boundary only):**
-  To add or refresh `inside_boundary` without re-running the full migration:
-
+To add or refresh `inside_boundary` without re-running the full migration:
   ```bash
   poetry run python scripts/add_boundary_to_registry.py \
     --registry data/processed/tiles/train_512/tile_registry.json \
     -b data/raw/vector/research_boundary.shp
   ```
-
 - **Synthetic datasets:**
-  The full-raster synthetic script (`generate_synthetic_parenthesis_from_raster.py`) writes `tile_registry.json` (with `inside_boundary`) into `synthetic_parenthesis_256/` and `synthetic_parenthesis_512/` automatically.
+The full-raster synthetic script (`generate_synthetic_parenthesis_from_raster.py`) writes `tile_registry.json` (with `inside_boundary`) into `synthetic_parenthesis_256/` and `synthetic_parenthesis_512/` automatically.
 
 **How it’s used**
 
-- **`filter_tiles_by_boundary.py`** can use `--registry <path>` so tile bounds come from the registry instead of reading each feature GeoTIFF (faster on large sets).
+- `**filter_tiles_by_boundary.py`** can use `--registry <path>` so tile bounds come from the registry instead of reading each feature GeoTIFF (faster on large sets).
 - You can later limit training or validation to tiles with `inside_boundary: true` by filtering the tile list (e.g. from the registry or from a derived `filtered_tiles.json`).
 
 See [Limiting training to the boundary](#limiting-training-to-the-boundary) for the full flow.
@@ -96,6 +127,10 @@ See [Limiting training to the boundary](#limiting-training-to-the-boundary) for 
 ## Illumination tagging (sun / shadow / mixed)
 
 Imagery can mix **sunlit** and **shadowed** areas; the same terrain looks different in each. You can tag tiles as **shadow**, **sun**, or **mixed** and then train only on one type (e.g. sun or shadow) to test whether illumination is a problem.
+
+![Sun vs shadow areas in imagery](docs/readme_assets/sunshine_shadow.png)
+
+*Same terrain in sun and shadow; we tag tiles so you can train on one type or compare.*
 
 **1. Classify tiles by shadow mask (recommended)**
 
@@ -111,9 +146,9 @@ Run after you have `tile_registry.json` (and optionally `filtered_tiles.json`):
 poetry run python scripts/classify_tiles_by_shadow_mask.py
 ```
 
-- **Config** `configs/data_preparation_config.yaml` → **`illumination`**: **`shadow_mask`** (e.g. `data/raw/vector/shadow_mask.shp`), **`mixed_threshold`** (default `0.3` → tile is mixed when >30% is the minority class).
+- **Config** `configs/data_preparation_config.yaml` → `**illumination`**: `**shadow_mask**` (e.g. `data/raw/vector/shadow_mask.shp`), `**mixed_threshold**` (default `0.3` → tile is mixed when >30% is the minority class).
 - **CLI**: `--shadow-mask PATH`, `--mixed-threshold 0.3`, `--registry`, `--filtered-tiles`, `--qgis-layer`, `--dry-run`.
-- Updates **`illumination`** (and empty **`illumination_metrics`**) in **tile_registry.json** and **filtered_tiles.json**; writes **illumination_tiles.geojson** + **.qml** for QGIS (shadow / sun / mixed styling).
+- Updates `**illumination`** (and empty `**illumination_metrics**`) in **tile_registry.json** and **filtered_tiles.json**; writes **illumination_tiles.geojson** + **.qml** for QGIS (shadow / sun / mixed styling).
 
 **Legacy: add_illumination_tags.py**  
 Alternative: centroid point-in-polygon from a vector with an attribute, or automatic tagging from RGB (HSV). See config `illumination.illumination_vector` and `illumination.shadow_example_ids` / `sun_example_ids`. Values there are sun / shadow / ambiguous; the recommended pipeline uses **classify_tiles_by_shadow_mask.py** and sun / shadow / mixed.
@@ -128,121 +163,42 @@ poetry run python scripts/train_model.py --illumination-filter sun
 poetry run python scripts/train_model.py --illumination-filter shadow
 ```
 
-- Keeps only tiles whose **`illumination`** matches the filter (**mixed** and background are excluded unless you change config).
-- To **include background** when using the filter, set in `configs/training_config.yaml`: **`data.illumination_include_background: true`**.
+- Keeps only tiles whose `**illumination**` matches the filter (**mixed** and background are excluded unless you change config).
+- To **include background** when using the filter, set in `configs/training_config.yaml`: `**data.illumination_include_background: true`**.
 
-If you use the extended set (`use_background_and_augmentation: true`), re-run **`prepare_extended_training_set.py`** after classifying tiles so augmented entries inherit **`illumination`** from the source lobe tile.
+If you use the extended set (`use_background_and_augmentation: true`), re-run `**prepare_extended_training_set.py**` after classifying tiles so augmented entries inherit `**illumination**` from the source lobe tile.
 
 ---
 
-## Training
+## Input layers (channels)
 
-### Production training (full dataset)
+The model can use several **input channels**. At least one must be enabled in `configs/training_config.yaml` (under `data`); you can ablate channels to test their effect.
 
-1. **Prepare data once** (tiles, proximity maps, filtered tile list):
+| Layer | Config toggle | Description |
+|-------|----------------|-------------|
+| **R, G, B** | `use_rgb` | Red, green, blue from the aerial imagery. |
+| **DEM** | `use_dem` | Digital elevation model. |
+| **Slope** | `use_slope` | Terrain slope (derived from DEM). |
+| **Slope Stripes** | `use_slope_stripes_channel` | Gabor-based texture aligned to slope (optional). See [Slope-stripes channel (optional)](#slope-stripes-channel-optional). |
+| **Segmentation** | `use_segmentation_layer` | OBIA-style segment IDs as a boundary hint (optional). See [Segmentation layer (optional)](#segmentation-layer-optional). |
 
-   ```bash
-   poetry run python scripts/prepare_training_data.py
-   ```
+**Representative tile (good prediction):** tile_7370 — prediction aligns well with target; car tracks are visible on the Slope Stripes panel.
 
-   Output: `data/processed/tiles/train/` (features, targets, `filtered_tiles.json`).
+![Representative tile 7370 — good prediction, car tracks visible on Slope Stripes](docs/readme_assets/representative_tile_layers.png)
 
-2. **Optional – extended training set** (background tiles + pre-written augmented lobe tiles). Run after step 1 if you want to use `use_background_and_augmentation: true` in config. Options: use `configs/data_preparation_config.yaml` (augmentation and lobes/background ratio) or pass paths explicitly:
+**Minimal detection (for comparison):** tile_6953 — target has many lobe shapes but the model’s prediction is mostly low; illustrates tiles that may need more training.
 
-   ```bash
-   poetry run python scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml
-   ```
+![Representative tile 6953 — minimal detection](docs/readme_assets/representative_tile_6953.png)
 
-   For 512×512 tiles, set `tile_size: 512` in the config or run with `--tile-size 512` (uses `paths_512`). Default is 256.
+**Gabor slope-stripes sample** (freq=0.15, sigma=5.0) — linear texture aligned with terrain slope:
 
-   Or without config (default paths for 256):
-
-   ```bash
-   poetry run python scripts/prepare_extended_training_set.py \
-     --filtered-tiles data/processed/tiles/train/filtered_tiles.json \
-     --features-dir data/processed/tiles/train/features \
-     --targets-dir data/processed/tiles/train/targets
-   ```
-
-   Output: `features/augmented/`, `targets/augmented/`, and `extended_training_tiles.json` next to `filtered_tiles.json`. Training then loads this JSON when `use_background_and_augmentation: true`.
-
-3. **Run training** (uses `configs/training_config.yaml` and full AOI tiles):
-
-   ```bash
-   poetry run python scripts/train_model.py
-   ```
-
-   Optional arguments:
-
-   - `--config PATH` – config file (default: `configs/training_config.yaml`)
-   - `--run-name NAME` – MLflow run name
-   - `--max-epochs N` – override `num_epochs` (e.g. `--max-epochs 1` for a quick run)
-   - `--max-tiles N` – cap total tiles before train/val/test split (for quick runs)
-   - `--illumination-filter sun|shadow` – train only on sun or shadow tiles (no background by default; requires illumination tags from `add_illumination_tags.py`). Set `data.illumination_include_background: true` in config to include background.
-   - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
-   - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
-   - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
-   - `--use-slope-stripes-channel` – enable slope-stripes (Gabor) as an extra input channel; requires `slope_stripes_channel_dir` in paths
-   - `--slope-stripes-only` – use **only** the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting `use_rgb`/`use_dem`/`use_slope`/`use_segmentation_layer` to false and `use_slope_stripes_channel` to true in config
-
-   **Input layer toggles** (in `configs/training_config.yaml` under `data`): **use_rgb**, **use_dem**, **use_slope**, **use_segmentation_layer**, **use_slope_stripes_channel**. At least one must be true. Use these to ablate channels (e.g. SlopeStripes-only by setting only `use_slope_stripes_channel: true`).
-
-   If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
-
-   Runs are logged to MLflow (`./mlruns`). When prompted, you can enter a **run intention** (short description); it is stored as the MLflow tag `run_intention` and shown on the loss plot, useful for diary and run comparison. After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
-
-### Limiting training to the boundary
-
-To train only on tiles that intersect the research boundary:
-
-1. **Create a tile registry** (if you don’t have one) so tile bounds are available. Add `--boundary data/raw/vector/research_boundary.shp` to set `inside_boundary` on each tile (see [Tile registry](#tile-registry)):
-
-   ```bash
-   poetry run python scripts/create_tile_registry.py \
-     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
-     --source-raster data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif \
-     --features-dir data/processed/tiles/train_512/features \
-     --output data/processed/tiles/train_512/tile_registry.json \
-     --tile-size 512 --boundary data/raw/vector/research_boundary.shp
-   ```
-
-2. **Filter tiles by boundary:**
-
-   ```bash
-   poetry run python scripts/filter_tiles_by_boundary.py \
-     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
-     -b data/raw/vector/research_boundary.shp \
-     --registry data/processed/tiles/train_512/tile_registry.json \
-     -o data/processed/tiles/train_512/filtered_tiles_in_boundary.json
-   ```
-
-   Without a registry, use `--features-dir data/processed/tiles/train_512/features` instead of `--registry ...` (script will read bounds from each feature GeoTIFF).
-
-3. **Point training at the filtered list:** In `configs/training_config.yaml`, set the path block you use (e.g. `paths.production_512.filtered_tiles`) to `data/processed/tiles/train_512/filtered_tiles_in_boundary.json`, then run `train_model.py` as usual.
-
-### Dev training (small area, fast iteration)
-
-Uses a 1024×1024 cropped area and 36 tiles for quick checks.
-
-1. Prepare dev data:
-
-   ```bash
-   poetry run python scripts/prepare_training_data.py --dev
-   ```
-
-2. Train:
-
-   ```bash
-   poetry run python scripts/train_model.py --dev
-   ```
-
-   Optional: `--max-epochs 1` for a single-epoch dry run.
+![Gabor slope-stripes sample (freq=0.15, sigma=5.0)](docs/readme_assets/gabor_slope_stripes_sample.png)
 
 ---
 
 ## Hyperparameter tuning (Optuna)
 
-Tuning runs multiple training trials with different hyperparameters and can prune poor trials early.
+Tuning runs multiple training trials with different hyperparameters and can prune poor trials early. Run this **before** full training to find good hyperparameters; then train with `--best-hparams` or `--hp_from_run_id` (see [Training](#training)).
 
 **CLI**
 
@@ -252,20 +208,22 @@ poetry run python scripts/tune_hyperparameters.py --n-trials 30 [--dev] [--pruni
 
 Common options:
 
-| Option | Default | Description |
-|--------|--------|-------------|
-| `--config` | `configs/training_config.yaml` | Base training config |
-| `--dev` | off | Use dev tiles (faster, smaller dataset) |
-| `--n-trials` | 30 | Number of Optuna trials |
-| `--study-name` | `lobe_detection_hp_tuning` | Study name (used in storage and MLflow) |
-| `--pruning` | on | Enable Optuna pruning |
-| `--no-persist` | off | Disable persistent storage (in-memory only) |
-| `--results-csv` | `data/optuna_results/<study>_trials.csv` | Where to write trials CSV |
-| `--no-seed` | off | Disable seeding first trial from previous best |
 
-Each trial runs training for up to **`num_epochs`** from the config (e.g. 300 in `training_config.yaml`), or until pruning/early stopping. Two **progress plots** are written under `data/optuna_results/` and updated after each trial: (1) **`<study_name>_progress.png`** – trial number vs final value and best-so-far; (2) **`<study_name>_progress_epochs.png`** – validation loss at every epoch across all trials (x-axis labels like T0 E1, T0 E2, …, T1 E1, …). Paths are printed at start (`[PROGRESS] plot_path=...`, `epochs_plot_path=...`); use a viewer that auto-refreshes to follow live.
+| Option          | Default                                  | Description                                    |
+| --------------- | ---------------------------------------- | ---------------------------------------------- |
+| `--config`      | `configs/training_config.yaml`           | Base training config                           |
+| `--dev`         | off                                      | Use dev tiles (faster, smaller dataset)        |
+| `--n-trials`    | 30                                       | Number of Optuna trials                        |
+| `--study-name`  | `lobe_detection_hp_tuning`               | Study name (used in storage and MLflow)        |
+| `--pruning`     | on                                       | Enable Optuna pruning                          |
+| `--no-persist`  | off                                      | Disable persistent storage (in-memory only)    |
+| `--results-csv` | `data/optuna_results/<study>_trials.csv` | Where to write trials CSV                      |
+| `--no-seed`     | off                                      | Disable seeding first trial from previous best |
 
-To **train** (not tune) using hyperparameters from a specific MLflow run (e.g. a past training or tuning run), use **`train_model.py`** with `--hp_from_run_id RUN_ID` (see [Training](#training) optional arguments).
+
+Each trial runs training for up to `**num_epochs**` from the config (e.g. 300 in `training_config.yaml`), or until pruning/early stopping. Two **progress plots** are written under `data/optuna_results/` and updated after each trial: (1) `**<study_name>_progress.png`** – trial number vs final value and best-so-far; (2) `**<study_name>_progress_epochs.png**` – validation loss at every epoch across all trials (x-axis labels like T0 E1, T0 E2, …, T1 E1, …). Paths are printed at start (`[PROGRESS] plot_path=...`, `epochs_plot_path=...`); use a viewer that auto-refreshes to follow live.
+
+To **train** (not tune) using hyperparameters from a specific MLflow run (e.g. a past training or tuning run), use `**train_model.py`** with `--hp_from_run_id RUN_ID` (see [Training](#training) optional arguments).
 
 Trials are stored in `data/optuna_studies/<study_name>_<mode>.db` (SQLite) by default. Each trial is logged to MLflow under experiment `lobe_detection_hp_tuning`. Best hyperparameters are written to `configs/best_hyperparameters.yaml` (see script output for path when using custom study name).
 
@@ -279,6 +237,91 @@ Runs 30 trials with dev tiles and pruning (~8 h order of magnitude). Edit the sc
 
 ---
 
+## Training
+
+**Tracking progress:** During training you can follow **loss** (and optionally MAE) in real time: an in-training plot is updated each epoch, and runs are logged to MLflow so you can compare curves. You can also inspect **best predicted tiles** (e.g. lowest loss or highest IoU) via configurable tile IDs (see `visualization.representative_tile_ids` in config).
+
+![Example: loss during training (in progress)](docs/readme_assets/training_loss_example.png)
+
+**After a run:** You get a **detailed loss plot** (train/val, optional early-stop note such as “Early stop: val_loss (improvement >= 1e-06)”, best epoch). Representative prediction tiles (RGB, target, prediction) are saved as MLflow artifacts and can be viewed in the MLflow UI or in the run folder.
+
+![Example: detailed loss plot with early stopping](docs/readme_assets/training_loss_detailed_example.png)
+
+**Why we compute baseline metrics:** We compute **per-tile baseline metrics** (e.g. MAE when predicting 0 everywhere) so we can tell whether the model is **actually learning** or just matching a trivial strategy. Validation reports MAE and “improvement over baseline”; if the model does not beat the naive baseline, the setup or objective may need adjustment. See [docs/baseline_preparation_guide.md](docs/baseline_preparation_guide.md) for details.
+
+### Production training (full dataset)
+
+1. **Prepare data once** (tiles, proximity maps, filtered tile list):
+  ```bash
+   poetry run python scripts/prepare_training_data.py
+  ```
+   Output: `data/processed/tiles/train/` (features, targets, `filtered_tiles.json`).
+2. **Optional – extended training set** (background tiles + pre-written augmented lobe tiles). Run after step 1 if you want to use `use_background_and_augmentation: true` in config. Options: use `configs/data_preparation_config.yaml` (augmentation and lobes/background ratio) or pass paths explicitly:
+  ```bash
+   poetry run python scripts/prepare_extended_training_set.py --config configs/data_preparation_config.yaml
+  ```
+   For 512×512 tiles, set `tile_size: 512` in the config or run with `--tile-size 512` (uses `paths_512`). Default is 256.
+   Or without config (default paths for 256):
+   Output: `features/augmented/`, `targets/augmented/`, and `extended_training_tiles.json` next to `filtered_tiles.json`. Training then loads this JSON when `use_background_and_augmentation: true`.
+3. **Run training** (uses `configs/training_config.yaml` and full AOI tiles):
+  ```bash
+   poetry run python scripts/train_model.py
+  ```
+   Optional arguments:
+  - `--config PATH` – config file (default: `configs/training_config.yaml`)
+  - `--run-name NAME` – MLflow run name
+  - `--max-epochs N` – override `num_epochs` (e.g. `--max-epochs 1` for a quick run)
+  - `--max-tiles N` – cap total tiles before train/val/test split (for quick runs)
+  - `--illumination-filter sun|shadow` – train only on sun or shadow tiles (no background by default; requires illumination tags from `add_illumination_tags.py`). Set `data.illumination_include_background: true` in config to include background.
+  - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
+  - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
+  - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
+  - `--use-slope-stripes-channel` – enable slope-stripes (Gabor) as an extra input channel; requires `slope_stripes_channel_dir` in paths
+  - `--slope-stripes-only` – use **only** the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting `use_rgb`/`use_dem`/`use_slope`/`use_segmentation_layer` to false and `use_slope_stripes_channel` to true in config
+   **Input layer toggles** (in `configs/training_config.yaml` under `data`): **use_rgb**, **use_dem**, **use_slope**, **use_segmentation_layer**, **use_slope_stripes_channel**. At least one must be true. Use these to ablate channels (e.g. SlopeStripes-only by setting only `use_slope_stripes_channel: true`).
+   If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
+   Runs are logged to MLflow (`./mlruns`). When prompted, you can enter a **run intention** (short description); it is stored as the MLflow tag `run_intention` and shown on the loss plot, useful for diary and run comparison. After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
+
+### Limiting training to the boundary
+
+To train only on tiles that intersect the research boundary:
+
+1. **Create a tile registry** (if you don’t have one) so tile bounds are available. Add `--boundary data/raw/vector/research_boundary.shp` to set `inside_boundary` on each tile (see [Tile registry](#tile-registry)):
+  ```bash
+   poetry run python scripts/create_tile_registry.py \
+     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
+     --source-raster data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif \
+     --features-dir data/processed/tiles/train_512/features \
+     --output data/processed/tiles/train_512/tile_registry.json \
+     --tile-size 512 --boundary data/raw/vector/research_boundary.shp
+  ```
+2. **Filter tiles by boundary:**
+  ```bash
+   poetry run python scripts/filter_tiles_by_boundary.py \
+     --filtered-tiles data/processed/tiles/train_512/filtered_tiles.json \
+     -b data/raw/vector/research_boundary.shp \
+     --registry data/processed/tiles/train_512/tile_registry.json \
+     -o data/processed/tiles/train_512/filtered_tiles_in_boundary.json
+  ```
+   Without a registry, use `--features-dir data/processed/tiles/train_512/features` instead of `--registry ...` (script will read bounds from each feature GeoTIFF).
+3. **Point training at the filtered list:** In `configs/training_config.yaml`, set the path block you use (e.g. `paths.production_512.filtered_tiles`) to `data/processed/tiles/train_512/filtered_tiles_in_boundary.json`, then run `train_model.py` as usual.
+
+### Dev training (small area, fast iteration)
+
+Uses a 1024×1024 cropped area and 36 tiles for quick checks.
+
+1. Prepare dev data:
+  ```bash
+   poetry run python scripts/prepare_training_data.py --dev
+  ```
+2. Train:
+  ```bash
+   poetry run python scripts/train_model.py --dev
+  ```
+   Optional: `--max-epochs 1` for a single-epoch dry run.
+
+---
+
 ## Viewing results
 
 Start MLflow UI:
@@ -287,14 +330,14 @@ Start MLflow UI:
 poetry run python scripts/start_mlflow_ui.py
 ```
 
-Open http://127.0.0.1:5001. Use it to compare runs, view metrics, and download artifacts (plots, prediction tiles, logged model).
+Open [http://127.0.0.1:5001](http://127.0.0.1:5001). Use it to compare runs, view metrics, and download artifacts (plots, prediction tiles, logged model).
 
 ---
 
 ## Configuration
 
 - **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs, **input layer toggles** (`use_rgb`, `use_dem`, `use_slope`, `use_segmentation_layer`, `use_slope_stripes_channel`; at least one must be true), `illumination_filter` and `illumination_include_background` (when training on sun/shadow only).
-- **Data preparation / illumination**: `configs/data_preparation_config.yaml` – extended set (background, augmentation) and **`illumination`** (shadow/sun example tile IDs, `ambiguous_max_fraction` or `ambiguous_value_band` for tagging).
+- **Data preparation / illumination**: `configs/data_preparation_config.yaml` – extended set (background, augmentation) and `**illumination`** (shadow/sun example tile IDs, `ambiguous_max_fraction` or `ambiguous_value_band` for tagging).
 - **Loss functions**: See [docs/loss_functions.md](docs/loss_functions.md) for descriptions of all options (`smooth_l1`, `weighted_smooth_l1`, `dice`, `iou`, `soft_iou`, `encouragement`, `focal`, `combined`).
 - **Best HP (after tuning)**: `configs/best_hyperparameters.yaml` – can be merged or used to update the main config.
 - **Spatial/project**: `configs/project_metadata.yaml`.
@@ -315,11 +358,9 @@ poetry run pytest tests/unit -v
 
 - Require dev data: run `poetry run python scripts/prepare_training_data.py --dev` once.
 - Run with the `e2e` marker (slow; ~2–3 min for training + tuning):
-
   ```bash
   poetry run pytest tests/e2e -m e2e -v
   ```
-
 - What they do:
   - **Minimal training**: 1 epoch on dev tiles (256×256), then check MLflow run and `best_val_loss`.
   - **Minimal tuning**: 1 Optuna trial (1 epoch) on dev tiles, then check trials CSV (state and value).
@@ -331,24 +372,24 @@ Run unit tests with `pytest tests/unit`; use `pytest tests/e2e -m e2e` when you 
 
 ## Synthetic parenthesis dataset (sanity-check)
 
-Quick check that the pipeline can learn: train on synthetic shapes (black “(” and “)” on real imagery) instead of lobes.
+When training on real lobe imagery, ground features are not very distinct and the CNN can struggle to learn. To sanity-check that the setup is sound, we use a much simpler task: **embed huge black “(” and “)” shapes on the same imagery** and train the model to detect those. If the architecture and config are reasonable, the model should do well on this obvious target; if it fails even here, the problem is likely with the pipeline or configuration, not with the difficulty of real lobes. Good results on synthetic parenthesis give confidence that the config makes sense before pushing on real data.
+
+![Synthetic parenthesis shapes on imagery](docs/readme_assets/synthetic_parenthesis.png)
+
+*Black parenthesis shapes overlaid on the same imagery for a sanity-check task.*
 
 **From full raster (recommended)** — uses `data/raw/vector/research_boundary.shp` so shapes are placed only inside the boundary:
 
 1. Ensure DEM and slope are resampled (e.g. already done by `prepare_training_data.py` or `prepare_training_steps.py`).
 2. Generate synthetic tiles (256 and 512):
-
-   ```bash
+  ```bash
    poetry run python scripts/generate_synthetic_parenthesis_from_raster.py
-   ```
-
+  ```
    Output: `data/processed/tiles/synthetic_parenthesis_256/` and `synthetic_parenthesis_512/` (features, targets, `filtered_tiles.json`). Override boundary with `-b path/to/vector.shp` or use `-b data/processed/vector/imagery_valid_boundaries.geojson` if you ran `extract_imagery_boundaries.py`.
-
 3. Train in synthetic mode:
-
-   ```bash
+  ```bash
    poetry run python scripts/train_model.py --config configs/training_config_synthetic_parenthesis.yaml --mode synthetic_parenthesis
-   ```
+  ```
 
 See `docs/synthetic_parenthesis_dataset.md` for the legacy tile-based generator and details.
 
@@ -356,34 +397,32 @@ See `docs/synthetic_parenthesis_dataset.md` for the legacy tile-based generator 
 
 ## Slope-stripes channel (optional)
 
-Optional raster channel (Gabor freq=0.15, sigma=5.0) indicating where linear texture aligns with terrain slope; see **docs/daily_diary/** for process description and proof figures. **Run** (after DEM/slope resampling): `poetry run python scripts/create_slope_stripes_channel.py --method gabor --gabor-frequency 0.15 --gabor-sigma 5.0`. Default output: `data/processed/raster/slope_stripes_channel.tif`. Tile with `create_tiles.py` (same size/overlap as features), then set `data.use_slope_stripes_channel: true` and `slope_stripes_channel_dir` in config. Requires `scikit-image`. `prepare_training_data.py` can generate and tile this channel in one go.
+Optional raster channel (Gabor freq=0.15, sigma=5.0) indicating where linear texture aligns with terrain slope. On normal (unrotated) imagery, slope-aligned stripes produce strong values.
+
+![Gabor slope-stripes sample (freq=0.15, sigma=5.0)](docs/readme_assets/gabor_slope_stripes_sample.png)
+
+**Run** (after DEM/slope resampling): `poetry run python scripts/create_slope_stripes_channel.py --method gabor --gabor-frequency 0.15 --gabor-sigma 5.0`. Default output: `data/processed/raster/slope_stripes_channel.tif`. Tile with `create_tiles.py` (same size/overlap as features), then set `data.use_slope_stripes_channel: true` and `slope_stripes_channel_dir` in config. Requires `scikit-image`. `prepare_training_data.py` can generate and tile this channel in one go.
 
 ---
 
 ## Segmentation layer (optional)
 
-A **separate raster layer** of segment IDs (OBIA-style, Felzenszwalb) can be used as a **6th input channel** to the CNN for boundary hints. By default it is limited to the research boundary (nodata outside).
+A **separate raster layer** of segment IDs (OBIA-style, Felzenszwalb) can be used as a **6th input channel** to the CNN for boundary hints. By default it is limited to the research boundary (nodata outside). When enabled, the **representative tile** figures (see [Input layers (channels)](#input-layers-channels)) include a Segmentation panel showing segment boundaries over the tile.
 
 - **Requires:** `pip install scikit-image`
 
 ### Production (train_512 or train)
 
 - **1) Create the full raster** (default: input = `data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif`, output = `data/processed/raster/imagery_segmentation_layer.tif`, boundary = research_boundary.shp). Skip if `imagery_segmentation_layer.tif` already exists.
-
   ```bash
   poetry run python scripts/create_segmentation_layer.py
   ```
-
   Options: `-i` / `-o` for input/output raster, `-b` for boundary (omit to segment full raster), `--scale` / `--scale2` for segment size, `--block-size` for large rasters. See `scripts/create_segmentation_layer.py --help`.
-
 - **2) Tile the segmentation raster** with the **same tile size and overlap** as your feature tiles, so each feature tile has a matching segmentation tile (e.g. for 512×512 production):
-
   ```bash
   poetry run python scripts/create_tiles.py -i data/processed/raster/imagery_segmentation_layer.tif -o data/processed/tiles/train_512/segmentation --tile-size 512 --overlap 0.3 --no-organize
   ```
-
   For 256×256 use `-o data/processed/tiles/train/segmentation` and `--tile-size 256`.
-
 - **3) Enable in training:** In `configs/training_config.yaml` set `data.use_segmentation_layer: true` and under the chosen path (e.g. `paths.production_512`) set `segmentation_dir: "data/processed/tiles/train_512/segmentation"`. The model will use 6 input channels (RGB + DEM + slope + segmentation).
 
 ### Synthetic parenthesis
@@ -394,7 +433,7 @@ For the synthetic dataset, the full segmentation raster is created by `create_se
 
 ## Other scripts
 
-- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset. **Illumination:** **`classify_tiles_by_shadow_mask.py`** – classify tiles as sun/shadow/mixed from **shadow mask** (polygons = shadow, outside = sun; >30% minority → mixed); update `tile_registry.json` and `filtered_tiles.json`, write QGIS layer; config: `illumination.shadow_mask`, `illumination.mixed_threshold`. Legacy: `add_illumination_tags.py` (centroid or RGB).
+- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset. **Illumination:** `**classify_tiles_by_shadow_mask.py`** – classify tiles as sun/shadow/mixed from **shadow mask** (polygons = shadow, outside = sun; >30% minority → mixed); update `tile_registry.json` and `filtered_tiles.json`, write QGIS layer; config: `illumination.shadow_mask`, `illumination.mixed_threshold`. Legacy: `add_illumination_tags.py` (centroid or RGB).
 - **Boundary / AOI**: `extract_imagery_boundaries.py` – vectorize valid-data (non-white) regions to GeoJSON; `filter_tiles_by_boundary.py` – filter `filtered_tiles.json` to tiles intersecting a boundary (e.g. research_boundary.shp).
 - **Synthetic**: `generate_synthetic_parenthesis_from_raster.py` – full-raster synthetic parenthesis inside boundary, then tile to 256/512; `generate_synthetic_parenthesis_dataset.py` – legacy tile-based synthetic data.
 - **Segmentation**: `create_segmentation_layer.py` – OBIA-style segment ID raster (optional CNN hint), limited to boundary by default.

@@ -1,0 +1,24 @@
+---
+description: Daily diary and improvements backlog locations and when to update
+alwaysApply: false
+---
+
+# Project tracking
+
+## Daily Diary
+
+- **Location**: `personal/docs/daily_diary/YYYY-MM-DD.md`
+- **Purpose**: Track meaningful training runs, experiments, and insights.
+- **Update when**: After significant model changes or experiments; when working on training, loss, or architecture; when MLflow runs reveal important patterns. Focus on top ~20% of runs.
+- **Include**: Key runs and configs, what worked/didn’t, insights, metrics, lessons learned. **Exclude**: Future plans (use backlog), routine runs.
+- **Format**: See `personal/docs/daily_diary/README.md`.
+
+## Improvements Backlog
+
+- **Location**: `personal/docs/improvements_backlog.md`
+- **Purpose**: Potential improvements, ideas, future work. Organize by priority (High/Medium/Low). Mark items completed when implemented.
+- **Update when**: Identifying solutions during analysis, discussing future improvements, ideas from experiments.
+
+## Diary maintenance
+
+- Check diaries when working on models, training, or significant changes. Update relevant daily entries if new insights emerge. Reference diary entries in backlog for context. Keep entries factual (what happened, not plans).

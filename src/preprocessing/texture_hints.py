@@ -120,9 +120,13 @@ def compute_slope_stripes_channel(
     dem: np.ndarray,
     sigma_smooth: float = 1.5,
     sigma_structure: float = 2.0,
+    alignment_power: float = 1.0,
 ) -> np.ndarray:
     """
-    Single band: coherence * slope_alignment (high where stripes exist and follow slope).
+    Single band: coherence * (slope_alignment ** alignment_power). High where stripes exist and follow slope.
+    alignment_power > 1: emphasise orientation (stripes invisible when not aligned).
+    alignment_power = 1: linear.
+    0 <= alignment_power < 1: reduce orientation influence (stripes more visible when not aligned); 0 = ignore orientation.
     Returns (H, W) float32, values in [0, 1].
     """
     coherence, stripe_angle = structure_tensor_coherence_and_orientation(
@@ -130,7 +134,8 @@ def compute_slope_stripes_channel(
     )
     aspect = aspect_from_dem(dem)
     alignment = slope_alignment(stripe_angle, aspect)
-    out = coherence * alignment
+    alignment_factor = np.power(np.maximum(alignment, 1e-12), alignment_power)
+    out = coherence * alignment_factor
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
@@ -140,10 +145,11 @@ def compute_gabor_slope_stripes_channel(
     frequency: float = 0.1,
     sigma: float = 3.0,
     n_orientations: int = 16,
+    alignment_power: float = 1.0,
 ) -> np.ndarray:
     """
-    Gabor-based slope-stripes: max Gabor response over orientations = strength;
-    stripe direction = orientation of max response (+ pi/2); then strength * slope_alignment.
+    Gabor-based slope-stripes: max Gabor response = strength; stripe direction from max orientation;
+    then strength * (slope_alignment ** alignment_power). >1 = emphasise orientation; 0 = ignore orientation.
     Requires scikit-image. Returns (H, W) float32, values in [0, 1].
     """
     try:
@@ -167,5 +173,6 @@ def compute_gabor_slope_stripes_channel(
         strength = np.clip(strength / strength_max, 0.0, 1.0).astype(np.float32)
     aspect = aspect_from_dem(dem)
     alignment = slope_alignment(stripe_angle, aspect)
-    out = strength * alignment
+    alignment_factor = np.power(np.maximum(alignment, 1e-12), alignment_power)
+    out = strength * alignment_factor
     return np.clip(out, 0.0, 1.0).astype(np.float32)
