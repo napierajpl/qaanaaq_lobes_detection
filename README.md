@@ -276,6 +276,7 @@ Runs 30 trials with dev tiles and pruning (~8 h order of magnitude). Edit the sc
   - `--best-hparams` – override config with best hyperparameters from `configs/best_hyperparameters.yaml` (from HP tuning)
   - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
   - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
+  - `--resume PATH` – continue training from a full checkpoint (`training_latest.pt` or a new-format `best_model.pt` with optimizer, scheduler, and metrics history); see [Warm start (resume)](#warm-start-resume)
   - `--use-slope-stripes-channel` – enable slope-stripes (Gabor) as an extra input channel; requires `slope_stripes_channel_dir` in paths
   - `--slope-stripes-only` – use **only** the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting `use_rgb`/`use_dem`/`use_slope`/`use_segmentation_layer` to false and `use_slope_stripes_channel` to true in config
    **Input layer toggles** (in `configs/training_config.yaml` under `data`): **use_rgb**, **use_dem**, **use_slope**, **use_segmentation_layer**, **use_slope_stripes_channel**. At least one must be true. Use these to ablate channels (e.g. SlopeStripes-only by setting only `use_slope_stripes_channel: true`).
@@ -319,6 +320,33 @@ Uses a 1024×1024 cropped area and 36 tiles for quick checks.
    poetry run python scripts/train_model.py --dev
   ```
    Optional: `--max-epochs 1` for a single-epoch dry run.
+
+### Warm start (resume)
+
+After each epoch, training writes a **full resume checkpoint** and metadata next to your configured **`models_dir`** (see `paths` in `configs/training_config.yaml`):
+
+- **`training_latest.pt`** – model, optimizer, LR scheduler state, and training loop state (metrics history, early-stopping counters, best val metrics, encoder-unfreeze flag).
+- **`warm_start_metadata.json`** – human-readable summary: last completed epoch, target `num_epochs`, mode, best val loss/MAE/IoU, full **`config_snapshot`**, and **`metrics_history`** for plotting the loss curve offline.
+
+**Resume from CLI**
+
+```bash
+poetry run python scripts/train_model.py --config configs/training_config.yaml --resume data/models/production/training_latest.pt
+```
+
+Use the same config and data layout as the original run (architecture, `in_channels`, paths, tile list). `num_epochs` in config is the **total** cap; training continues from `last_completed_epoch + 1` until that cap or early stopping.
+
+**Inspect and resume interactively**
+
+```bash
+poetry run python scripts/resume_from_saved.py --config configs/training_config.yaml
+```
+
+Resolves the default manifest from `models_dir`, prints a short summary, saves **`warm_start_loss_preview.png`** next to the manifest, optionally shows the plot (`--show-plot`), then runs `train_model.py --resume …` (use `--yes` to skip the prompt, `--dry-run` for info only).
+
+**MLflow:** A resumed run logs tags `resumed_from_checkpoint` and param `resume_last_completed_epoch`.
+
+**Note:** Checkpoints produced **before** this format existed contain weights only (no `training_loop_state`). Run at least one full epoch with the current code to generate compatible files.
 
 ---
 
@@ -437,6 +465,7 @@ For the synthetic dataset, the full segmentation raster is created by `create_se
 - **Boundary / AOI**: `extract_imagery_boundaries.py` – vectorize valid-data (non-white) regions to GeoJSON; `filter_tiles_by_boundary.py` – filter `filtered_tiles.json` to tiles intersecting a boundary (e.g. research_boundary.shp).
 - **Synthetic**: `generate_synthetic_parenthesis_from_raster.py` – full-raster synthetic parenthesis inside boundary, then tile to 256/512; `generate_synthetic_parenthesis_dataset.py` – legacy tile-based synthetic data.
 - **Segmentation**: `create_segmentation_layer.py` – OBIA-style segment ID raster (optional CNN hint), limited to boundary by default.
+- **Training resume**: `resume_from_saved.py` – show `warm_start_metadata.json`, optional loss preview, then continue with `train_model.py --resume` (see [Warm start (resume)](#warm-start-resume)).
 - **Analysis**: `compute_baseline_metrics.py`, `analyze_per_tile_performance.py`, `compare_runs.py`.
 - **QGIS**: `generate_tile_index_shapefile.py` – tile index shapefile for the map; use `--tile-size 512` for 512×512 tiles (requires a registry in `train_512/`). **Synthetic parenthesis:** `generate_synthetic_parenthesis_shapefile.py --tile-size 256` (or `512`) – writes `tile_index.shp` and QML styles into the synthetic tile directory for QGIS.
 

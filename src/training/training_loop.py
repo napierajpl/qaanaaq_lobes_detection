@@ -2,6 +2,7 @@
 Training loop: one-epoch train/validate, Optuna pruning, early stopping, best-model save, loss plot.
 """
 
+import copy
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +13,13 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from src.training.trainer import train_one_epoch, validate, save_checkpoint
+from src.training.trainer import train_one_epoch, validate, save_training_checkpoint
 from src.training.visualization import plot_loss_simple, show_best_predicted_tile, show_highest_iou_tile
+from src.training.warm_start import (
+    TRAINING_LATEST_NAME,
+    WARM_START_MANIFEST_NAME,
+    write_warm_start_manifest,
+)
 from src.utils.mlflow_utils import log_metrics
 
 
@@ -45,6 +51,30 @@ def _build_epoch_train_loader(
     epoch_tiles = [train_tiles[i] for i in indices]
     train_loader, _ = create_dataloaders_fn(epoch_tiles, val_tiles)
     return train_loader
+
+
+def _build_training_loop_state(
+    metrics_history: Dict[str, List],
+    early_stopping_counter: int,
+    best_val_loss_for_early_stop: float,
+    best_val_loss: float,
+    best_val_mae: float,
+    best_val_iou: float,
+    baseline_mae: Optional[float],
+    encoder_unfrozen: bool,
+    last_completed_epoch: int,
+) -> Dict[str, Any]:
+    return {
+        "metrics_history": {k: list(v) for k, v in metrics_history.items()},
+        "early_stopping_counter": int(early_stopping_counter),
+        "best_val_loss_for_early_stop": float(best_val_loss_for_early_stop),
+        "best_val_loss": float(best_val_loss),
+        "best_val_mae": float(best_val_mae),
+        "best_val_iou": float(best_val_iou),
+        "baseline_mae": None if baseline_mae is None else float(baseline_mae),
+        "encoder_unfrozen": bool(encoder_unfrozen),
+        "last_completed_epoch": int(last_completed_epoch),
+    }
 
 
 def run_training_loop(
@@ -80,15 +110,24 @@ def run_training_loop(
     run_name: str,
     train_subsample_ratio: float,
     optuna_module: Optional[Any],
+    *,
+    resume_state: Optional[Dict[str, Any]] = None,
+    models_dir: Optional[Path] = None,
+    project_root: Optional[Path] = None,
+    config_path: Optional[Path] = None,
+    mode: str = "production",
+    config_snapshot: Optional[dict] = None,
 ) -> TrainingLoopResult:
+    import logging
+    import mlflow
+    import matplotlib.pyplot as plt
+
+    logger = logging.getLogger(__name__)
+
     num_epochs = config["training"]["num_epochs"]
     unfreeze_after_epoch = config["model"].get("encoder", {}).get("unfreeze_after_epoch", 0)
-    encoder_unfrozen = False
     SAVE_THROTTLE_SECONDS = 3 * 60
 
-    best_val_loss = float("inf")
-    best_val_mae = float("inf")
-    best_val_iou = 0.0
     best_tile_loss_so_far = float("inf")
     best_tile_info_so_far = None
     best_iou_so_far = -1.0
@@ -99,28 +138,69 @@ def run_training_loop(
     last_drawn_best_tile_loss = None
     last_drawn_best_iou_tile_id = None
     last_drawn_best_iou = None
-    early_stopping_counter = 0
-    best_val_loss_for_early_stop = float("inf")
-    baseline_mae = None
 
-    metrics_history = {
-        "epochs": [],
-        "train_loss": [],
-        "val_loss": [],
-        "val_mae": [],
-        "val_iou": [],
-        "improvement_percent": [],
-        "early_stop_counter": [],
-    }
+    if resume_state:
+        tls = resume_state
+        metrics_history = copy.deepcopy(tls["metrics_history"])
+        early_stopping_counter = int(tls["early_stopping_counter"])
+        best_val_loss_for_early_stop = float(tls["best_val_loss_for_early_stop"])
+        best_val_loss = float(tls["best_val_loss"])
+        best_val_mae = float(tls["best_val_mae"])
+        best_val_iou = float(tls["best_val_iou"])
+        bl = tls.get("baseline_mae")
+        baseline_mae = None if bl is None else float(bl)
+        encoder_unfrozen = bool(tls["encoder_unfrozen"])
+        start_epoch = int(tls["last_completed_epoch"]) + 1
+        logger.info(
+            "Resuming training from epoch %s (last completed epoch was %s)",
+            start_epoch,
+            tls["last_completed_epoch"],
+        )
+    else:
+        encoder_unfrozen = False
+        best_val_loss = float("inf")
+        best_val_mae = float("inf")
+        best_val_iou = 0.0
+        early_stopping_counter = 0
+        best_val_loss_for_early_stop = float("inf")
+        baseline_mae = None
+        metrics_history = {
+            "epochs": [],
+            "train_loss": [],
+            "val_loss": [],
+            "val_mae": [],
+            "val_iou": [],
+            "learning_rate": [],
+            "improvement_percent": [],
+            "early_stop_counter": [],
+        }
+        start_epoch = 1
 
-    import logging
-    import mlflow
-    import matplotlib.pyplot as plt
-
-    logger = logging.getLogger(__name__)
     current_train_loader = train_loader
 
-    for epoch in range(1, num_epochs + 1):
+    if start_epoch > num_epochs:
+        logger.warning(
+            "Nothing to train: next epoch would be %s but num_epochs is %s.",
+            start_epoch,
+            num_epochs,
+        )
+        tls = resume_state or {}
+        le = int(tls.get("last_completed_epoch", 0))
+        return TrainingLoopResult(
+            best_val_loss=float(tls.get("best_val_loss", float("inf"))),
+            best_val_mae=float(tls.get("best_val_mae", float("inf"))),
+            best_val_iou=float(tls.get("best_val_iou", 0.0)),
+            metrics_history=metrics_history,
+            baseline_mae=baseline_mae,
+            best_tile_info_so_far=best_tile_info_so_far,
+            best_iou_tile_info_so_far=best_iou_tile_info_so_far,
+            best_tile_loss_so_far=best_tile_loss_so_far,
+            best_iou_so_far=best_iou_so_far,
+            best_iou_tile_loss_so_far=best_iou_tile_loss_so_far,
+            last_epoch=le,
+        )
+
+    for epoch in range(start_epoch, num_epochs + 1):
         if train_subsample_ratio < 1.0:
             current_train_loader = _build_epoch_train_loader(
                 train_tiles, val_tiles, train_subsample_ratio, epoch, create_dataloaders_fn,
@@ -185,6 +265,8 @@ def run_training_loop(
         if lr_scheduler is not None:
             lr_scheduler.step(val_metrics["val_loss"])
             mlflow.log_metric("learning_rate", optimizer.param_groups[0]["lr"], step=epoch)
+        current_lr = float(optimizer.param_groups[0]["lr"])
+        metrics_history["learning_rate"].append(current_lr)
 
         if early_stopping_patience:
             if val_metrics["val_loss"] < best_val_loss_for_early_stop - early_stopping_min_delta:
@@ -232,7 +314,26 @@ def run_training_loop(
             now = time.time()
             may_save = last_time_saved is None or (now - last_time_saved) >= SAVE_THROTTLE_SECONDS
             if may_save:
-                save_checkpoint(model, optimizer, epoch, val_metrics, best_model_path)
+                loop_state = _build_training_loop_state(
+                    metrics_history,
+                    early_stopping_counter,
+                    best_val_loss_for_early_stop,
+                    best_val_loss,
+                    best_val_mae,
+                    best_val_iou,
+                    baseline_mae,
+                    encoder_unfrozen,
+                    epoch,
+                )
+                save_training_checkpoint(
+                    best_model_path,
+                    model,
+                    optimizer,
+                    epoch,
+                    val_metrics,
+                    lr_scheduler=lr_scheduler,
+                    training_loop_state=loop_state,
+                )
                 logger.info(
                     "New best model saved! val_loss: %.4f | val_mae: %.4f | val_iou: %.4f",
                     best_val_loss, best_val_mae, best_val_iou,
@@ -291,12 +392,53 @@ def run_training_loop(
         print(summary, flush=True)
 
         loss_fig = plot_loss_simple(
-            metrics_history["epochs"], metrics_history["train_loss"], metrics_history["val_loss"],
+            metrics_history["epochs"],
+            metrics_history["train_loss"],
+            metrics_history["val_loss"],
+            learning_rate=metrics_history["learning_rate"],
         )
         mlflow.log_figure(loss_fig, "plots/loss.png")
         if loss_plot_path is not None:
             loss_fig.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
         plt.close(loss_fig)
+
+        loop_state = _build_training_loop_state(
+            metrics_history,
+            early_stopping_counter,
+            best_val_loss_for_early_stop,
+            best_val_loss,
+            best_val_mae,
+            best_val_iou,
+            baseline_mae,
+            encoder_unfrozen,
+            epoch,
+        )
+        if models_dir is not None and project_root is not None:
+            latest_path = models_dir / TRAINING_LATEST_NAME
+            save_training_checkpoint(
+                latest_path,
+                model,
+                optimizer,
+                epoch,
+                val_metrics,
+                lr_scheduler=lr_scheduler,
+                training_loop_state=loop_state,
+            )
+            write_warm_start_manifest(
+                models_dir / WARM_START_MANIFEST_NAME,
+                checkpoint_path=latest_path,
+                config_path=config_path,
+                mode=mode,
+                num_epochs_target=num_epochs,
+                last_completed_epoch=epoch,
+                metrics_history=metrics_history,
+                best_val_loss=best_val_loss,
+                best_val_mae=best_val_mae,
+                best_val_iou=best_val_iou,
+                loss_plot_path=loss_plot_path,
+                project_root=project_root,
+                config_snapshot=config_snapshot,
+            )
 
     return TrainingLoopResult(
         best_val_loss=best_val_loss,

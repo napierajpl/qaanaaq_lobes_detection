@@ -87,6 +87,13 @@ TRAIN_MODEL_ARG_SPECS: List[dict] = [
         "action": "store_true",
         "help": "Use slope-stripes (Gabor) channel as 6th input. Requires slope_stripes_channel_dir in paths.",
     },
+    {
+        "option": "--resume",
+        "type": Path,
+        "default": None,
+        "metavar": "PATH",
+        "help": "Resume training from a full checkpoint (training_latest.pt or best_model.pt with training_loop_state).",
+    },
 ]
 
 

@@ -120,22 +120,29 @@ def plot_loss_simple(
     epochs: List[int],
     train_loss: List[float],
     val_loss: List[float],
+    learning_rate: Optional[List[float]] = None,
     output_path: Optional[Path] = None,
 ) -> plt.Figure:
     """Minimal loss plot (train + val curves only). Use during training for fast per-epoch updates."""
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, (ax, ax_lr) = plt.subplots(
+        2,
+        1,
+        figsize=(10, 7.2),
+        sharex=True,
+        gridspec_kw={"height_ratios": [5, 1]},
+    )
     ax.plot(epochs, train_loss, 'b-', linewidth=2, label='Train Loss', marker='o', markersize=4)
     ax.plot(epochs, val_loss, 'r-', linewidth=2, label='Val Loss', marker='s', markersize=4)
     all_loss_values = train_loss + val_loss
     y_min, y_max = _calculate_smart_ylim(all_loss_values)
     ax.set_ylim(bottom=y_min, top=y_max)
-    ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Loss', fontsize=12)
     ax.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
     x_lo, x_hi = _xlim_epochs(epochs)
     ax.set_xlim(left=x_lo, right=x_hi)
     ax.legend(loc='best', fontsize=10)
     ax.grid(True, alpha=0.3)
+    _plot_learning_rate_axis(ax_lr, epochs, learning_rate)
     plt.tight_layout()
     if output_path:
         fig.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -160,6 +167,7 @@ def plot_loss(
     training_start_datetime: Optional[str] = None,
     training_duration_seconds: Optional[float] = None,
     run_intention: Optional[str] = None,
+    learning_rate: Optional[List[float]] = None,
 ) -> plt.Figure:
     """
     Plot training and validation loss across epochs.
@@ -168,7 +176,13 @@ def plot_loss(
     unfreeze vertical line (when freeze_encoder and unfreeze_after_epoch > 0),
     and small-font config/tile info.
     """
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, (ax, ax_lr) = plt.subplots(
+        2,
+        1,
+        figsize=(10, 7.2),
+        sharex=True,
+        gridspec_kw={"height_ratios": [5, 1]},
+    )
 
     ax.plot(epochs, train_loss, 'b-', linewidth=2, label='Train Loss', marker='o', markersize=4)
     ax.plot(epochs, val_loss, 'r-', linewidth=2, label='Val Loss', marker='s', markersize=4)
@@ -182,7 +196,6 @@ def plot_loss(
     y_min, y_max = _calculate_smart_ylim(all_loss_values)
     ax.set_ylim(bottom=y_min, top=y_max)
 
-    ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Loss', fontsize=12)
     title = 'Training and Validation Loss'
     if run_intention:
@@ -206,6 +219,7 @@ def plot_loss(
 
     ax.legend(loc='upper right', fontsize=9)
     ax.grid(True, alpha=0.3)
+    _plot_learning_rate_axis(ax_lr, epochs, learning_rate)
 
     info_lines = []
     if early_stopping_patience is not None and early_stop_counter is not None:
@@ -403,6 +417,7 @@ def create_training_plots(
             training_start_datetime=opts.get('training_start_datetime'),
             training_duration_seconds=opts.get('training_duration_seconds'),
             run_intention=opts.get('run_intention'),
+            learning_rate=metrics_history.get('learning_rate'),
         )
         figures['loss'] = fig
         if output_dir:
@@ -424,6 +439,31 @@ def create_training_plots(
             fig.savefig(output_dir / 'improvement_percent.png', dpi=150, bbox_inches='tight')
 
     return figures
+
+
+def _plot_learning_rate_axis(
+    ax: plt.Axes,
+    epochs: List[int],
+    learning_rate: Optional[List[float]],
+) -> None:
+    """Draw LR subplot aligned with epoch axis; 20% height in parent figure."""
+    lr_values = learning_rate or []
+    if lr_values:
+        n = min(len(epochs), len(lr_values))
+        x = epochs[:n]
+        y = lr_values[:n]
+        ax.plot(x, y, color='purple', linewidth=1.6, marker='.', markersize=3, label='Learning Rate')
+        lr_min, lr_max = _calculate_smart_ylim(y, lower_percentile=0.0, upper_percentile=100.0, padding=0.05)
+        if lr_min == lr_max:
+            lr_min = max(0.0, lr_min * 0.95)
+            lr_max = lr_max * 1.05 if lr_max > 0 else 1.0
+        ax.set_ylim(bottom=lr_min, top=lr_max)
+        ax.legend(loc='best', fontsize=8)
+    ax.set_ylabel('LR', fontsize=10)
+    ax.set_xlabel('Epoch', fontsize=12)
+    x_lo, x_hi = _xlim_epochs(epochs)
+    ax.set_xlim(left=x_lo, right=x_hi)
+    ax.grid(True, alpha=0.3)
 
 
 def get_representative_tile_ids_for_viz(

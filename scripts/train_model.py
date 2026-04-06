@@ -3,6 +3,7 @@
 Train CNN model for lobe detection.
 """
 
+import copy
 import logging
 import sys
 import time
@@ -49,6 +50,7 @@ from src.training.mlflow_run_context import (
     prompt_run_intention,
 )
 from src.training.cli import build_train_parser, apply_cli_overrides
+from src.training.trainer import load_training_checkpoint
 from src.training.training_loop import run_training_loop
 from src.training.post_training import (
     log_final_metrics_and_trial_attrs,
@@ -87,6 +89,8 @@ def train_model_with_config(
     applied_best_hparams: Optional[dict] = None,
     max_tiles: Optional[int] = None,
     filtered_tiles_override: Optional[Path] = None,
+    resume_from: Optional[Path] = None,
+    config_path: Optional[Path] = None,
 ) -> float:
     """
     Train model with given configuration.
@@ -156,6 +160,30 @@ def train_model_with_config(
     criterion = components.criterion
     optimizer = components.optimizer
     lr_scheduler = components.lr_scheduler
+
+    resume_loop_state: Optional[dict] = None
+    if resume_from is not None:
+        if trial is not None:
+            raise ValueError("Resume is not supported together with Optuna trial.")
+        ckpt_path = resolve_path(resume_from, project_root)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
+        ckpt = load_training_checkpoint(ckpt_path, device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if lr_scheduler is not None and ckpt.get("lr_scheduler_state_dict") is not None:
+            lr_scheduler.load_state_dict(ckpt["lr_scheduler_state_dict"])
+        resume_loop_state = ckpt.get("training_loop_state")
+        if resume_loop_state is None:
+            raise ValueError(
+                "Checkpoint has no training_loop_state. Use training_latest.pt or a best_model.pt "
+                "saved by a current training run (full resume format)."
+            )
+        logger.info(
+            "Loaded resume checkpoint from %s (last completed epoch %s)",
+            ckpt_path,
+            resume_loop_state.get("last_completed_epoch"),
+        )
     iou_threshold = components.iou_threshold
     early_stopping_patience = components.early_stopping_patience
     early_stopping_min_delta = components.early_stopping_min_delta
@@ -202,6 +230,13 @@ def train_model_with_config(
 
         training_start_time = time.time()
         loss_plot_options["training_start_datetime"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if resume_loop_state is not None:
+            mlflow.set_tag("resumed_from_checkpoint", str(resume_from))
+            mlflow.log_param(
+                "resume_last_completed_epoch",
+                int(resume_loop_state.get("last_completed_epoch", 0)),
+            )
+        config_snapshot = copy.deepcopy(config)
         result = run_training_loop(
             config, model, criterion, optimizer, lr_scheduler, device,
             train_tiles, val_tiles, train_loader, val_loader, _make_loaders,
@@ -209,6 +244,12 @@ def train_model_with_config(
             segmentation_dir, slope_stripes_channel_dir, use_rgb, use_dem, use_slope,
             iou_threshold, early_stopping_patience, early_stopping_min_delta, max_grad_norm,
             best_model_path, loss_plot_path, trial, run_name, train_subsample_ratio, optuna,
+            resume_state=resume_loop_state,
+            models_dir=models_dir,
+            project_root=project_root,
+            config_path=config_path,
+            mode=mode,
+            config_snapshot=config_snapshot,
         )
         best_val_loss = result.best_val_loss
         best_val_mae = result.best_val_mae
@@ -300,7 +341,9 @@ def main():
     else:
         mode = "dev" if args.dev else "production"
 
-    # Call the extracted training function
+    resume_from = getattr(args, "resume", None)
+    resume_path = resolve_path(resume_from, project_root) if resume_from else None
+
     train_model_with_config(
         config=config,
         mode=mode,
@@ -309,6 +352,8 @@ def main():
         applied_best_hparams=applied_best_hparams,
         max_tiles=args.max_tiles,
         filtered_tiles_override=args.filtered_tiles,
+        resume_from=resume_path,
+        config_path=config_path,
     )
 
 

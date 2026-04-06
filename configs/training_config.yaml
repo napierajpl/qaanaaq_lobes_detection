@@ -35,7 +35,7 @@ model:
 training:
   batch_size: 16
   num_epochs: 150 # Increased from 50 - U-Net typically needs 100+ epochs
-  learning_rate: 0.00002
+  learning_rate: 0.0005
   optimizer: "Adam"
   # Loss function options:
   #   - "smooth_l1": Basic Smooth L1 (Huber) loss for regression
@@ -48,7 +48,7 @@ training:
   #   - "combined": IoU + Weighted Smooth L1; best val loss in tuning, more stable (diary: combined preferred).
   #   - "acl": Adaptive Correction Loss (Gully-ERFNet): λ·Dice + (1−λ)·Focal; linear structures, imbalance.
   #   See docs/loss_functions.md for full descriptions and config params.
-  loss_function: "acl"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
+  loss_function: "focal"  # ACL = Dice + Focal (Gully-ERFNet); tune acl_lambda to balance overlap vs regression focus.
   weight_decay: 0.001  # Increased from 0.0001 to reduce overfitting
   # Weighted loss parameters (for weighted_smooth_l1 and combined)
   lobe_weight: 5.0  # Weight for lobe pixels (value >= threshold) - not used with encouragement
@@ -61,8 +61,8 @@ training:
   # Encouragement loss weight (only used if loss_function == "encouragement")
   encouragement_weight: 10.0  # Increased from 2.0 - stronger penalty for predictions below threshold
   # Focal Loss parameters (only used if loss_function == "focal" or "acl")
-  focal_alpha: 0.75  # Weighting factor (0.75 = more weight on lobes, 0.25 = more on background)
-  focal_gamma: 2.0  # Focusing parameter (higher = more focus on hard examples, 2.0 is standard)
+  focal_alpha: 0.8  # Weighting factor (0.75 = more weight on lobes, 0.25 = more on background)
+  focal_gamma: 3.0  # Focusing parameter (higher = more focus on hard examples, 2.0 is standard)
   # IoU threshold for lobe detection
   # IMPORTANT: How IoU works with proximity maps:
   #   - Proximity maps have values 0-20: 0=background, 1-19=proximity, 20=lobe center
@@ -75,10 +75,10 @@ training:
   # Learning rate scheduler
   lr_scheduler: "ReduceLROnPlateau"
   lr_scheduler_patience: 4
-  lr_scheduler_factor: 0.5
-  lr_scheduler_min_lr: 0.00005
+  lr_scheduler_factor: 0.7
+  lr_scheduler_min_lr: 0.000005
   # Early stopping
-  early_stopping_patience: 15
+  early_stopping_patience: 25
   early_stopping_min_delta: 0
   # Gradient clipping (for stability)
   max_grad_norm: 1.0
@@ -93,11 +93,11 @@ data:
   standardize_dem: true
   standardize_slope: true
   # Which input channels to use (at least one must be true). Order: RGB, DEM, Slope, Segmentation, SlopeStripes.
-  use_rgb: false
+  use_rgb: true
   use_dem: false
   use_slope: false
   # Optional: segmentation layer (OBIA-style segment IDs). Requires paths.<key>.segmentation_dir.
-  use_segmentation_layer: false
+  use_segmentation_layer: true
   # Optional: slope-stripes (Gabor, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
   use_slope_stripes_channel: true
   # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).

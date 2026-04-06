@@ -3,7 +3,7 @@ Training utilities.
 """
 
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple
 
 import numpy as np
 import torch
@@ -258,6 +258,33 @@ def validate(
     return (metrics, best_tile_result, best_iou_tile_result, out_batch_losses)
 
 
+def save_training_checkpoint(
+    checkpoint_path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    metrics: Dict[str, float],
+    *,
+    lr_scheduler: Optional[Any] = None,
+    training_loop_state: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Save training checkpoint (model, optimizer, optional scheduler, optional full loop state for resume).
+    """
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: Dict[str, Any] = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "metrics": metrics,
+    }
+    if lr_scheduler is not None and hasattr(lr_scheduler, "state_dict"):
+        payload["lr_scheduler_state_dict"] = lr_scheduler.state_dict()
+    if training_loop_state is not None:
+        payload["training_loop_state"] = training_loop_state
+    torch.save(payload, checkpoint_path)
+
+
 def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -265,21 +292,11 @@ def save_checkpoint(
     metrics: Dict[str, float],
     checkpoint_path: Path,
 ) -> None:
-    """
-    Save model checkpoint.
+    """Backward-compatible thin wrapper (weights + optimizer only)."""
+    save_training_checkpoint(
+        checkpoint_path, model, optimizer, epoch, metrics,
+    )
 
-    Args:
-        model: Model to save
-        optimizer: Optimizer state
-        epoch: Current epoch
-        metrics: Current metrics
-        checkpoint_path: Path to save checkpoint
-    """
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-    torch.save({
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "metrics": metrics,
-    }, checkpoint_path)
+def load_training_checkpoint(checkpoint_path: Path, device: torch.device) -> Dict[str, Any]:
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
