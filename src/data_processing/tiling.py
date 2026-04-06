@@ -170,44 +170,39 @@ class Tiler:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        src = rasterio.open(input_raster_path)
-        tiles = self.calculate_tile_grid(src.width, src.height)
-
         output_paths = []
 
-        # Use tqdm for progress bar if available
-        tile_iter = tqdm(enumerate(tiles), total=len(tiles), desc="Creating tiles", unit="tile")
+        with rasterio.open(input_raster_path) as src:
+            tiles = self.calculate_tile_grid(src.width, src.height)
 
-        for idx, (row_start, row_end, col_start, col_end) in tile_iter:
-            data, transform = self.extract_tile(src, row_start, row_end, col_start, col_end)
+            tile_iter = tqdm(enumerate(tiles), total=len(tiles), desc="Creating tiles", unit="tile")
 
-            tile_filename = output_dir / f"tile_{idx:04d}.tif"
+            for idx, (row_start, row_end, col_start, col_end) in tile_iter:
+                data, transform = self.extract_tile(src, row_start, row_end, col_start, col_end)
 
-            # Determine output dtype - use float32 if data was converted, otherwise use original
-            output_dtype = data.dtype
-            if output_dtype == np.float32 and src.dtypes[0] != np.float32:
-                # Check if we should use the most common dtype from source
-                output_dtype = src.dtypes[0]
+                tile_filename = output_dir / f"tile_{idx:04d}.tif"
 
-            with rasterio.open(
-                tile_filename,
-                'w',
-                driver='GTiff',
-                height=data.shape[1],
-                width=data.shape[2],
-                count=src.count,
-                dtype=output_dtype,
-                crs=src.crs,
-                transform=transform,
-                nodata=src.nodata,
-                compress='lzw',
-            ) as dst:
-                # Convert data back to output dtype if needed
-                if data.dtype != output_dtype:
-                    data = data.astype(output_dtype)
-                dst.write(data)
+                output_dtype = data.dtype
+                if output_dtype == np.float32 and src.dtypes[0] != np.float32:
+                    output_dtype = src.dtypes[0]
 
-            output_paths.append(tile_filename)
+                with rasterio.open(
+                    tile_filename,
+                    'w',
+                    driver='GTiff',
+                    height=data.shape[1],
+                    width=data.shape[2],
+                    count=src.count,
+                    dtype=output_dtype,
+                    crs=src.crs,
+                    transform=transform,
+                    nodata=src.nodata,
+                    compress='lzw',
+                ) as dst:
+                    if data.dtype != output_dtype:
+                        data = data.astype(output_dtype)
+                    dst.write(data)
 
-        src.close()
+                output_paths.append(tile_filename)
+
         return output_paths

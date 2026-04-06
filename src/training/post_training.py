@@ -39,7 +39,7 @@ def log_final_metrics_and_trial_attrs(
             trial.set_user_attr("best_val_mae", float(best_val_mae))
             trial.set_user_attr("best_val_iou", float(best_val_iou))
         except Exception:
-            pass
+            logger.debug("Failed to set final trial attributes", exc_info=True)
 
 
 def print_mlflow_run_end(run_name: str, best_val_loss: float, trial: Optional[Any]) -> None:
@@ -51,19 +51,16 @@ def print_mlflow_run_end(run_name: str, best_val_loss: float, trial: Optional[An
     run_id = active.info.run_id
     tracking_uri = mlflow.get_tracking_uri()
     if trial is not None:
-        print(
-            f"[MLFLOW][OPTUNA][DONE] trial={getattr(trial, 'number', '?')} "
-            f"experiment_id={exp_id} run_id={run_id} run_name={run_name} "
-            f"best_val_loss={best_val_loss:.6f}",
-            flush=True,
+        logger.info(
+            "OPTUNA DONE trial=%s experiment_id=%s run_id=%s run_name=%s best_val_loss=%.6f",
+            getattr(trial, "number", "?"), exp_id, run_id, run_name, best_val_loss,
         )
     else:
-        print(
-            f"[MLFLOW][DONE] experiment_id={exp_id} run_id={run_id} run_name={run_name} "
-            f"best_val_loss={best_val_loss:.6f}",
-            flush=True,
+        logger.info(
+            "MLFLOW DONE experiment_id=%s run_id=%s run_name=%s best_val_loss=%.6f",
+            exp_id, run_id, run_name, best_val_loss,
         )
-    print(f"[MLFLOW] tracking_uri={tracking_uri}", flush=True)
+    logger.info("tracking_uri=%s", tracking_uri)
 
 
 def load_best_checkpoint(

@@ -1,9 +1,18 @@
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
+
+import yaml
 
 from src.utils.path_utils import tile_dir_for_pipeline
+
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "data_pipeline_paths.yaml"
+
+
+def _load_pipeline_config() -> Dict[str, Any]:
+    with open(_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
 
 
 class PipelineRunner:
@@ -62,46 +71,56 @@ class PipelineRunner:
 
 
 def production_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
+    cfg = _load_pipeline_config()
+    raw = cfg["raw"]
+    prod = cfg["production"]
+    prox = cfg["proximity"]
+    gabor = cfg["gabor"]
+    tiling = cfg["tiling"]
+    filt = cfg["filtering"]
+
     steps = [
         (
-            "Step 1: Generating proximity map for lobes (20px)",
+            f"Step 1: Generating proximity map for lobes ({prox['max_distance']}px)",
             [
                 "poetry", "run", "python", "scripts/generate_proximity_map.py",
-                "-i", "data/processed/raster/rasterized_lobes_raw_by_code.tif",
-                "-o", "data/processed/raster/rasterized_lobes_raw_by_code_proximity20px.tif",
-                "--max-value", "20",
-                "--max-distance", "20",
+                "-i", cfg["processed"]["lobes_raster"],
+                "-o", prod["proximity_map"],
+                "--max-value", str(prox["max_value"]),
+                "--max-distance", str(prox["max_distance"]),
             ],
         ),
         (
             "  Resampling DEM to match RGB...",
             [
                 "poetry", "run", "python", "scripts/resample_raster.py",
-                "-i", "data/raw/raster/dem/dem_from_arcticDEM_cropped2.tif",
-                "-r", "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif",
-                "-o", "data/processed/raster/dem_from_arcticDEM_resampled.tif",
+                "-i", raw["dem"],
+                "-r", raw["rgb"],
+                "-o", prod["dem_resampled"],
             ],
         ),
         (
             "  Resampling slope to match RGB...",
             [
                 "poetry", "run", "python", "scripts/resample_raster.py",
-                "-i", "data/raw/raster/dem/slope_from_dem_cropped.tif",
-                "-r", "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif",
-                "-o", "data/processed/raster/slope_from_dem_resampled.tif",
+                "-i", raw["slope"],
+                "-r", raw["rgb"],
+                "-o", prod["slope_resampled"],
             ],
         ),
         (
-            "  Generating slope-stripes channel (RGB + DEM, Gabor freq=0.15 sigma=5.0 align=5)...",
+            f"  Generating slope-stripes channel (RGB + DEM, Gabor "
+            f"freq={gabor['frequency']} sigma={gabor['sigma']} "
+            f"align={gabor['alignment_power']})...",
             [
                 "poetry", "run", "python", "scripts/create_slope_stripes_channel.py",
-                "--method", "gabor",
-                "--gabor-frequency", "0.15",
-                "--gabor-sigma", "5.0",
-                "--alignment-power", "5",
-                "-i", "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif",
-                "-d", "data/processed/raster/dem_from_arcticDEM_resampled.tif",
-                "-o", "data/processed/raster/slope_stripes_channel.tif",
+                "--method", gabor["method"],
+                "--gabor-frequency", str(gabor["frequency"]),
+                "--gabor-sigma", str(gabor["sigma"]),
+                "--alignment-power", str(gabor["alignment_power"]),
+                "-i", raw["rgb"],
+                "-d", prod["dem_resampled"],
+                "-o", prod["slope_stripes"],
             ],
         ),
         (
@@ -109,43 +128,45 @@ def production_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
             [
                 "poetry", "run", "python", "scripts/create_vrt_stack.py",
                 "-i",
-                "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif",
-                "data/processed/raster/dem_from_arcticDEM_resampled.tif",
-                "data/processed/raster/slope_from_dem_resampled.tif",
-                "-o", "data/processed/raster/features_combined.vrt",
+                raw["rgb"],
+                prod["dem_resampled"],
+                prod["slope_resampled"],
+                "-o", prod["features_vrt"],
             ],
         ),
     ]
     tile_dir = tile_dir_for_pipeline(False, tile_size)
+    overlap = str(tiling["overlap"])
     steps.extend([
         (
             f"Step 4: Creating tiles for features ({tile_size}x{tile_size})",
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", "data/processed/raster/features_combined.vrt",
+                "-i", prod["features_vrt"],
                 "-o", f"{tile_dir}/features",
                 "--tile-size", str(tile_size),
-                "--overlap", "0.3",
+                "--overlap", overlap,
             ],
         ),
         (
-            f"Step 5: Creating tiles for targets (proximity map 20px, {tile_size}x{tile_size})",
+            f"Step 5: Creating tiles for targets "
+            f"(proximity map {prox['max_distance']}px, {tile_size}x{tile_size})",
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", "data/processed/raster/rasterized_lobes_raw_by_code_proximity20px.tif",
+                "-i", prod["proximity_map"],
                 "-o", f"{tile_dir}/targets",
                 "--tile-size", str(tile_size),
-                "--overlap", "0.3",
+                "--overlap", overlap,
             ],
         ),
         (
             f"Step 5b: Creating tiles for slope-stripes channel ({tile_size}x{tile_size})",
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", "data/processed/raster/slope_stripes_channel.tif",
+                "-i", prod["slope_stripes"],
                 "-o", f"{tile_dir}/slope_stripes_channel",
                 "--tile-size", str(tile_size),
-                "--overlap", "0.3",
+                "--overlap", overlap,
                 "--no-organize",
             ],
         ),
@@ -157,94 +178,88 @@ def production_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
                 "--targets", f"{tile_dir}/targets",
                 "--output", f"{tile_dir}/filtered_tiles.json",
                 "--exclude-background",
-                "--lobe-threshold", "5.0",
+                "--lobe-threshold", str(filt["lobe_threshold"]),
             ],
         ),
     ])
     return steps
 
 
+def _crop_step(description: str, raw_path: str, output_path: str,
+               crop: Dict[str, Any]) -> Tuple[str, List[str]]:
+    return (
+        description,
+        [
+            "poetry", "run", "python", "scripts/crop_raster.py",
+            "-i", raw_path,
+            "--lon", str(crop["lon"]), "--lat", str(crop["lat"]),
+            "--width", str(crop["width"]), "--height", str(crop["height"]),
+            "-o", output_path,
+        ],
+    )
+
+
 def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
+    cfg = _load_pipeline_config()
+    raw = cfg["raw"]
+    dev = cfg["dev"]
+    crop = cfg["dev_crop"]
+    prox = cfg["proximity"]
+    gabor = cfg["gabor"]
+    tiling = cfg["tiling"]
+    filt = cfg["filtering"]
+
+    crop_size = f"{crop['width']}x{crop['height']}"
     steps = [
-        (
-            "Step 1: Cropping input files to 1024x1024",
-            [
-                "poetry", "run", "python", "scripts/crop_raster.py",
-                "-i", "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif",
-                "--lon", "-69.2674970", "--lat", "77.4766436",
-                "--width", "1024", "--height", "1024",
-                "-o", "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif",
-            ],
-        ),
-        (
-            "  Cropping DEM...",
-            [
-                "poetry", "run", "python", "scripts/crop_raster.py",
-                "-i", "data/raw/raster/dem/dem_from_arcticDEM_cropped2.tif",
-                "--lon", "-69.2674970", "--lat", "77.4766436",
-                "--width", "1024", "--height", "1024",
-                "-o", "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024.tif",
-            ],
-        ),
-        (
-            "  Cropping slope...",
-            [
-                "poetry", "run", "python", "scripts/crop_raster.py",
-                "-i", "data/raw/raster/dem/slope_from_dem_cropped.tif",
-                "--lon", "-69.2674970", "--lat", "77.4766436",
-                "--width", "1024", "--height", "1024",
-                "-o", "data/processed/raster/dev/slope_from_dem_cropped1024x1024.tif",
-            ],
-        ),
-        (
-            "  Cropping lobes raster...",
-            [
-                "poetry", "run", "python", "scripts/crop_raster.py",
-                "-i", "data/processed/raster/rasterized_lobes_raw_by_code.tif",
-                "--lon", "-69.2674970", "--lat", "77.4766436",
-                "--width", "1024", "--height", "1024",
-                "-o", "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024.tif",
-            ],
-        ),
+        _crop_step(f"Step 1: Cropping input files to {crop_size}",
+                   raw["rgb"], dev["rgb_cropped"], crop),
+        _crop_step("  Cropping DEM...",
+                   raw["dem"], dev["dem_cropped"], crop),
+        _crop_step("  Cropping slope...",
+                   raw["slope"], dev["slope_cropped"], crop),
+        _crop_step("  Cropping lobes raster...",
+                   cfg["processed"]["lobes_raster"], dev["lobes_cropped"], crop),
         (
             "Step 2: Resampling DEM and slope to match RGB resolution",
             [
                 "poetry", "run", "python", "scripts/resample_raster.py",
-                "-i", "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024.tif",
-                "-r", "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif",
-                "-o", "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif",
+                "-i", dev["dem_cropped"],
+                "-r", dev["rgb_cropped"],
+                "-o", dev["dem_resampled"],
             ],
         ),
         (
             "  Resampling slope...",
             [
                 "poetry", "run", "python", "scripts/resample_raster.py",
-                "-i", "data/processed/raster/dev/slope_from_dem_cropped1024x1024.tif",
-                "-r", "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif",
-                "-o", "data/processed/raster/dev/slope_from_dem_cropped1024x1024_resampled.tif",
+                "-i", dev["slope_cropped"],
+                "-r", dev["rgb_cropped"],
+                "-o", dev["slope_resampled"],
             ],
         ),
         (
-            "  Generating slope-stripes channel (cropped RGB + DEM, Gabor freq=0.15 sigma=5.0 align=5)...",
+            f"  Generating slope-stripes channel (cropped RGB + DEM, Gabor "
+            f"freq={gabor['frequency']} sigma={gabor['sigma']} "
+            f"align={gabor['alignment_power']})...",
             [
                 "poetry", "run", "python", "scripts/create_slope_stripes_channel.py",
-                "--method", "gabor",
-                "--gabor-frequency", "0.15",
-                "--gabor-sigma", "5.0",
-                "--alignment-power", "5",
-                "-i", "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif",
-                "-d", "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif",
-                "-o", "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif",
+                "--method", gabor["method"],
+                "--gabor-frequency", str(gabor["frequency"]),
+                "--gabor-sigma", str(gabor["sigma"]),
+                "--alignment-power", str(gabor["alignment_power"]),
+                "-i", dev["rgb_cropped"],
+                "-d", dev["dem_resampled"],
+                "-o", dev["slope_stripes"],
             ],
         ),
         (
-            "Step 3: Generating proximity map for cropped lobes (20px)",
+            f"Step 3: Generating proximity map for cropped lobes ({prox['max_distance']}px)",
             [
                 "poetry", "run", "python", "scripts/generate_proximity_map.py",
-                "-i", "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024.tif",
-                "-o", "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024_proximity20px.tif",
-                "--max-value", "20",
-                "--max-distance", "20",
+                "-i", dev["lobes_cropped"],
+                "-o", dev["proximity_map"],
+                "--max-value", str(prox["max_value"]),
+                "--max-distance", str(prox["max_distance"]),
             ],
         ),
         (
@@ -252,43 +267,45 @@ def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
             [
                 "poetry", "run", "python", "scripts/create_vrt_stack.py",
                 "-i",
-                "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif",
-                "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif",
-                "data/processed/raster/dev/slope_from_dem_cropped1024x1024_resampled.tif",
-                "-o", "data/processed/raster/dev/features_combined_cropped1024x1024.vrt",
+                dev["rgb_cropped"],
+                dev["dem_resampled"],
+                dev["slope_resampled"],
+                "-o", dev["features_vrt"],
             ],
         ),
     ]
     tile_dir = tile_dir_for_pipeline(True, tile_size)
+    overlap = str(tiling["overlap"])
     steps.extend([
         (
             f"Step 5: Creating tiles for features ({tile_size}x{tile_size})",
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", "data/processed/raster/dev/features_combined_cropped1024x1024.vrt",
+                "-i", dev["features_vrt"],
                 "-o", f"{tile_dir}/features",
                 "--tile-size", str(tile_size),
-                "--overlap", "0.3",
+                "--overlap", overlap,
             ],
         ),
         (
-            f"Step 6: Creating tiles for targets (proximity map 20px, {tile_size}x{tile_size})",
+            f"Step 6: Creating tiles for targets "
+            f"(proximity map {prox['max_distance']}px, {tile_size}x{tile_size})",
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024_proximity20px.tif",
+                "-i", dev["proximity_map"],
                 "-o", f"{tile_dir}/targets",
                 "--tile-size", str(tile_size),
-                "--overlap", "0.3",
+                "--overlap", overlap,
             ],
         ),
         (
             f"Step 6b: Creating tiles for slope-stripes channel ({tile_size}x{tile_size})",
             [
                 "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif",
+                "-i", dev["slope_stripes"],
                 "-o", f"{tile_dir}/slope_stripes_channel",
                 "--tile-size", str(tile_size),
-                "--overlap", "0.3",
+                "--overlap", overlap,
                 "--no-organize",
             ],
         ),
@@ -300,7 +317,7 @@ def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
                 "--targets", f"{tile_dir}/targets",
                 "--output", f"{tile_dir}/filtered_tiles.json",
                 "--exclude-background",
-                "--lobe-threshold", "5.0",
+                "--lobe-threshold", str(filt["lobe_threshold"]),
             ],
         ),
     ])

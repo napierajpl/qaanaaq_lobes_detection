@@ -8,8 +8,6 @@ This script orchestrates the full training data preparation pipeline.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.utils.path_utils import get_project_root
 from src.data_processing.prepare_training_steps import (
     PipelineRunner,

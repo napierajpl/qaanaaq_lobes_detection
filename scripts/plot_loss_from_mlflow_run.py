@@ -8,8 +8,6 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from src.training.visualization import plot_loss
 from src.utils.mlflow_plot_utils import (
     read_metric_by_step,

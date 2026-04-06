@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-import sys
 from pathlib import Path
 import numpy as np
 import rasterio
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.utils.path_utils import get_project_root, resolve_path
 
 def main():

@@ -297,9 +297,7 @@ class TileDataset(Dataset):
             with rasterio.open(stripe_path) as src:
                 stripe = src.read(1)
             stripe = np.clip(np.asarray(stripe, dtype=np.float32), 0.0, 1.0)[np.newaxis, :, :]
-            if self.use_rgb or self.use_dem or self.use_slope:
-                pass
-            else:
+            if not (self.use_rgb or self.use_dem or self.use_slope):
                 h, w = stripe.shape[1], stripe.shape[2]
             channel_list.append(stripe)
 
@@ -362,7 +360,7 @@ def load_filtered_tiles(filtered_tiles_path: Path, show_progress: bool = False) 
             data = json.loads(b"".join(chunks).decode("utf-8"))
             return data["tiles"]
         except Exception:
-            pass
+            pass  # Fall through to standard json.load below
     with open(path) as f:
         data = json.load(f)
     return data["tiles"]
@@ -396,8 +394,8 @@ def create_data_splits(
             f"train={train_split}, val={val_split}, test={test_split}"
         )
 
-    np.random.seed(random_seed)
-    indices = np.random.permutation(len(tile_list))
+    rng = np.random.default_rng(random_seed)
+    indices = rng.permutation(len(tile_list))
 
     n_train = int(len(tile_list) * train_split)
     n_val = int(len(tile_list) * val_split)
@@ -467,7 +465,7 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
+        pin_memory=torch.cuda.is_available(),
     )
 
     val_loader = DataLoader(
@@ -475,7 +473,7 @@ def create_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
+        pin_memory=torch.cuda.is_available(),
     )
 
     return train_loader, val_loader

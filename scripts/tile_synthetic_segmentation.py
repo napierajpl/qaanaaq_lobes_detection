@@ -3,10 +3,7 @@ Tile the full segmentation raster into synthetic_parenthesis_256/segmentation an
 synthetic_parenthesis_512/segmentation so tile indices match features/targets.
 Use after create_segmentation_for_synthetic_parenthesis.py (full raster only).
 """
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_processing.tiling import Tiler
 from src.utils.path_utils import get_project_root, resolve_path

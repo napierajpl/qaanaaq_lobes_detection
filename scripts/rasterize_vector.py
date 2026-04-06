@@ -2,9 +2,6 @@
 """Script to rasterize vector layer to GeoTIFF."""
 
 from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data_processing.vector_utils import rasterize_vector
 from src.utils.cli_utils import BaseCLIParser

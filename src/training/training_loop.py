@@ -3,8 +3,9 @@ Training loop: one-epoch train/validate, Optuna pruning, early stopping, best-mo
 """
 
 import copy
+import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -13,7 +14,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from src.training.trainer import train_one_epoch, validate, save_training_checkpoint
+logger = logging.getLogger(__name__)
+
+from src.training.trainer import train_one_epoch, validate, save_training_checkpoint, ValidationResult
 from src.training.visualization import plot_loss_simple, show_best_predicted_tile, show_highest_iou_tile
 from src.training.warm_start import (
     TRAINING_LATEST_NAME,
@@ -38,6 +41,77 @@ class TrainingLoopResult:
     last_epoch: int
 
 
+@dataclass
+class TrainingLoopConfig:
+    features_dir: Path
+    targets_dir: Path
+    normalization_stats: dict
+    tile_size: int
+    target_mode: str
+    binary_threshold: float
+    segmentation_dir: Optional[Path]
+    slope_stripes_channel_dir: Optional[Path]
+    use_rgb: bool
+    use_dem: bool
+    use_slope: bool
+    iou_threshold: float
+    early_stopping_patience: Optional[int]
+    early_stopping_min_delta: float
+    max_grad_norm: Optional[float]
+    best_model_path: Path
+    loss_plot_path: Optional[Path]
+    run_name: str
+    train_subsample_ratio: float
+    models_dir: Optional[Path] = None
+    project_root: Optional[Path] = None
+    config_path: Optional[Path] = None
+    mode: str = "production"
+    config_snapshot: Optional[dict] = None
+
+
+@dataclass
+class _EpochTracker:
+    best_val_loss: float = float("inf")
+    best_val_mae: float = float("inf")
+    best_val_iou: float = 0.0
+    best_val_loss_for_early_stop: float = float("inf")
+    early_stopping_counter: int = 0
+    baseline_mae: Optional[float] = None
+    encoder_unfrozen: bool = False
+    best_tile_loss_so_far: float = float("inf")
+    best_tile_info_so_far: Optional[dict] = None
+    best_iou_so_far: float = -1.0
+    best_iou_tile_info_so_far: Optional[dict] = None
+    best_iou_tile_loss_so_far: Optional[float] = None
+    last_time_saved: Optional[float] = None
+    last_drawn_best_tile_id: Optional[str] = None
+    last_drawn_best_tile_loss: Optional[float] = None
+    last_drawn_best_iou_tile_id: Optional[str] = None
+    last_drawn_best_iou: Optional[float] = None
+    metrics_history: Dict[str, List] = field(default_factory=lambda: {
+        "epochs": [], "train_loss": [], "val_loss": [],
+        "val_mae": [], "val_iou": [], "learning_rate": [],
+        "improvement_percent": [], "early_stop_counter": [],
+    })
+
+    @classmethod
+    def from_resume_state(cls, state: Dict[str, Any]) -> "_EpochTracker":
+        tracker = cls()
+        tracker.metrics_history = copy.deepcopy(state["metrics_history"])
+        tracker.early_stopping_counter = int(state["early_stopping_counter"])
+        tracker.best_val_loss_for_early_stop = float(state["best_val_loss_for_early_stop"])
+        tracker.best_val_loss = float(state["best_val_loss"])
+        tracker.best_val_mae = float(state["best_val_mae"])
+        tracker.best_val_iou = float(state["best_val_iou"])
+        bl = state.get("baseline_mae")
+        tracker.baseline_mae = None if bl is None else float(bl)
+        tracker.encoder_unfrozen = bool(state["encoder_unfrozen"])
+        return tracker
+
+
+SAVE_THROTTLE_SECONDS = 3 * 60
+
+
 def _build_epoch_train_loader(
     train_tiles: List[dict],
     val_tiles: List[dict],
@@ -53,28 +127,220 @@ def _build_epoch_train_loader(
     return train_loader
 
 
-def _build_training_loop_state(
-    metrics_history: Dict[str, List],
-    early_stopping_counter: int,
-    best_val_loss_for_early_stop: float,
-    best_val_loss: float,
-    best_val_mae: float,
-    best_val_iou: float,
-    baseline_mae: Optional[float],
-    encoder_unfrozen: bool,
-    last_completed_epoch: int,
-) -> Dict[str, Any]:
+def _build_training_loop_state(tracker: _EpochTracker, epoch: int) -> Dict[str, Any]:
     return {
-        "metrics_history": {k: list(v) for k, v in metrics_history.items()},
-        "early_stopping_counter": int(early_stopping_counter),
-        "best_val_loss_for_early_stop": float(best_val_loss_for_early_stop),
-        "best_val_loss": float(best_val_loss),
-        "best_val_mae": float(best_val_mae),
-        "best_val_iou": float(best_val_iou),
-        "baseline_mae": None if baseline_mae is None else float(baseline_mae),
-        "encoder_unfrozen": bool(encoder_unfrozen),
-        "last_completed_epoch": int(last_completed_epoch),
+        "metrics_history": {k: list(v) for k, v in tracker.metrics_history.items()},
+        "early_stopping_counter": int(tracker.early_stopping_counter),
+        "best_val_loss_for_early_stop": float(tracker.best_val_loss_for_early_stop),
+        "best_val_loss": float(tracker.best_val_loss),
+        "best_val_mae": float(tracker.best_val_mae),
+        "best_val_iou": float(tracker.best_val_iou),
+        "baseline_mae": None if tracker.baseline_mae is None else float(tracker.baseline_mae),
+        "encoder_unfrozen": bool(tracker.encoder_unfrozen),
+        "last_completed_epoch": int(epoch),
     }
+
+
+def _handle_optuna_pruning(
+    trial: Any, optuna_module: Any,
+    val_metrics: dict, epoch: int, run_name: str,
+) -> None:
+    import mlflow
+    if optuna_module is None:
+        raise ImportError("Optuna is required for hyperparameter tuning. Install with: poetry install")
+    trial.report(val_metrics["val_loss"], epoch)
+    if not trial.should_prune():
+        return
+    logger.info("Trial %s pruned at epoch %s", trial.number, epoch)
+    if hasattr(trial, "set_user_attr"):
+        try:
+            trial.set_user_attr("pruned_epoch", int(epoch))
+            trial.set_user_attr("pruned_val_loss", float(val_metrics["val_loss"]))
+        except Exception:
+            logger.debug("Failed to set pruned trial attributes", exc_info=True)
+    active = mlflow.active_run()
+    if active is not None:
+        logger.info(
+            "OPTUNA PRUNED trial=%s epoch=%s experiment_id=%s run_id=%s run_name=%s val_loss=%.6f",
+            trial.number, epoch, active.info.experiment_id,
+            active.info.run_id, run_name, val_metrics["val_loss"],
+        )
+        logger.info("tracking_uri=%s", mlflow.get_tracking_uri())
+    raise optuna_module.TrialPruned()
+
+
+def _update_early_stopping(
+    tracker: _EpochTracker, val_loss: float,
+    patience: Optional[int], min_delta: float, epoch: int,
+) -> bool:
+    if not patience:
+        tracker.metrics_history["early_stop_counter"].append(0)
+        return False
+    if val_loss < tracker.best_val_loss_for_early_stop - min_delta:
+        tracker.best_val_loss_for_early_stop = val_loss
+        tracker.early_stopping_counter = 0
+    else:
+        tracker.early_stopping_counter += 1
+    tracker.metrics_history["early_stop_counter"].append(tracker.early_stopping_counter)
+    if tracker.early_stopping_counter >= patience:
+        logger.info(
+            "EARLY STOP: No improvement for %s epochs. epoch=%s val_loss=%.6f best_val_loss=%.6f",
+            patience, epoch, val_loss, tracker.best_val_loss_for_early_stop,
+        )
+        return True
+    return False
+
+
+def _track_best_tiles(tracker: _EpochTracker, val_result: ValidationResult) -> None:
+    if val_result.best_tile is not None:
+        tile_info, tile_loss = val_result.best_tile
+        if tile_loss < tracker.best_tile_loss_so_far:
+            tracker.best_tile_loss_so_far = tile_loss
+            tracker.best_tile_info_so_far = tile_info
+            logger.info("New lowest-loss tile: %s loss=%.6f", tile_info.get("tile_id", "?"), tile_loss)
+    if val_result.best_iou_tile is not None:
+        if len(val_result.best_iou_tile) == 3:
+            tile_info, tile_iou, tile_loss = val_result.best_iou_tile
+        else:
+            tile_info, tile_iou = val_result.best_iou_tile
+            tile_loss = None
+        if tile_iou > tracker.best_iou_so_far:
+            tracker.best_iou_so_far = tile_iou
+            tracker.best_iou_tile_info_so_far = tile_info
+            tracker.best_iou_tile_loss_so_far = tile_loss
+            logger.info("New highest IoU tile: %s IoU=%.4f", tile_info.get("tile_id", "?"), tile_iou)
+
+
+def _save_best_model_and_viz(
+    tracker: _EpochTracker,
+    model: nn.Module, optimizer: torch.optim.Optimizer,
+    lr_scheduler: Optional[Any],
+    val_metrics: dict, epoch: int,
+    cfg: TrainingLoopConfig, trial: Optional[Any],
+) -> None:
+    import mlflow
+    import matplotlib.pyplot as plt
+
+    prev_best = tracker.best_val_loss
+    if val_metrics["val_loss"] >= prev_best:
+        return
+    tracker.best_val_loss = val_metrics["val_loss"]
+    tracker.best_val_mae = val_metrics["val_mae"]
+    tracker.best_val_iou = val_metrics.get("val_iou", 0.0)
+    now = time.time()
+    may_save = tracker.last_time_saved is None or (now - tracker.last_time_saved) >= SAVE_THROTTLE_SECONDS
+    if may_save:
+        loop_state = _build_training_loop_state(tracker, epoch)
+        save_training_checkpoint(
+            cfg.best_model_path, model, optimizer, epoch, val_metrics,
+            lr_scheduler=lr_scheduler, training_loop_state=loop_state,
+        )
+        logger.info(
+            "New best model saved! val_loss: %.4f | val_mae: %.4f | val_iou: %.4f",
+            tracker.best_val_loss, tracker.best_val_mae, tracker.best_val_iou,
+        )
+        if trial is None:
+            _log_best_tile_figures(tracker, model, cfg, plt, mlflow)
+        tracker.last_time_saved = time.time()
+    logger.info(
+        "BEST epoch=%s val_loss=%.6f (prev_best=%.6f) val_mae=%.6f val_iou=%.6f%s",
+        epoch, tracker.best_val_loss, prev_best, tracker.best_val_mae, tracker.best_val_iou,
+        " (saved)" if may_save else " (not saved, throttle)",
+    )
+
+
+def _log_best_tile_figures(tracker: _EpochTracker, model: nn.Module, cfg: TrainingLoopConfig, plt, mlflow) -> None:
+    if tracker.best_tile_info_so_far is not None:
+        bid = tracker.best_tile_info_so_far.get("tile_id")
+        if bid != tracker.last_drawn_best_tile_id or tracker.best_tile_loss_so_far != tracker.last_drawn_best_tile_loss:
+            fig = show_best_predicted_tile(
+                model, tracker.best_tile_info_so_far,
+                cfg.features_dir, cfg.targets_dir, cfg.normalization_stats,
+                torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                cfg.tile_size, cfg.iou_threshold, tracker.best_tile_loss_so_far,
+                target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
+                segmentation_base_dir=cfg.segmentation_dir, slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
+                use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
+            )
+            mlflow.log_figure(fig, "plots/best_predicted_tile.png")
+            if cfg.loss_plot_path is not None:
+                fig.savefig(cfg.loss_plot_path.parent / "best_predicted_tile.png", dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            tracker.last_drawn_best_tile_id = bid
+            tracker.last_drawn_best_tile_loss = tracker.best_tile_loss_so_far
+    if tracker.best_iou_tile_info_so_far is not None:
+        iid = tracker.best_iou_tile_info_so_far.get("tile_id")
+        if iid != tracker.last_drawn_best_iou_tile_id or tracker.best_iou_so_far != tracker.last_drawn_best_iou:
+            fig = show_highest_iou_tile(
+                model, tracker.best_iou_tile_info_so_far,
+                cfg.features_dir, cfg.targets_dir, cfg.normalization_stats,
+                torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                cfg.tile_size, cfg.iou_threshold, tracker.best_iou_so_far,
+                target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
+                segmentation_base_dir=cfg.segmentation_dir, slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
+                tile_loss=tracker.best_iou_tile_loss_so_far,
+                use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
+            )
+            mlflow.log_figure(fig, "plots/best_iou_tile.png")
+            if cfg.loss_plot_path is not None:
+                fig.savefig(cfg.loss_plot_path.parent / "best_iou_tile.png", dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            tracker.last_drawn_best_iou_tile_id = iid
+            tracker.last_drawn_best_iou = tracker.best_iou_so_far
+
+
+def _log_epoch_summary(
+    tracker: _EpochTracker, train_metrics: dict, val_metrics: dict,
+    epoch: int, num_epochs: int, patience: Optional[int],
+) -> None:
+    summary = (
+        "EPOCH %s/%s train_loss=%.6f val_loss=%.6f val_mae=%.6f val_iou=%.6f best_val_loss=%.6f"
+    )
+    args: list = [
+        epoch, num_epochs, train_metrics["train_loss"],
+        val_metrics["val_loss"], val_metrics["val_mae"],
+        val_metrics.get("val_iou", 0.0), tracker.best_val_loss,
+    ]
+    if patience:
+        summary += " early_stop=%s/%s"
+        args.extend([tracker.early_stopping_counter, patience])
+    if "val_baseline_mae" in val_metrics:
+        baseline = float(val_metrics["val_baseline_mae"])
+        improvement = float(val_metrics["val_improvement_over_baseline"])
+        pct = (improvement / baseline * 100.0) if baseline > 0 else 0.0
+        summary += " baseline_mae=%.6f improvement=%+.6f (%+.1f%%)"
+        args.extend([baseline, improvement, pct])
+    logger.info(summary, *args)
+
+
+def _save_latest_checkpoint(
+    tracker: _EpochTracker, model: nn.Module, optimizer: torch.optim.Optimizer,
+    lr_scheduler: Optional[Any], val_metrics: dict, epoch: int,
+    cfg: TrainingLoopConfig, num_epochs: int,
+) -> None:
+    if cfg.models_dir is None or cfg.project_root is None:
+        return
+    loop_state = _build_training_loop_state(tracker, epoch)
+    latest_path = cfg.models_dir / TRAINING_LATEST_NAME
+    save_training_checkpoint(
+        latest_path, model, optimizer, epoch, val_metrics,
+        lr_scheduler=lr_scheduler, training_loop_state=loop_state,
+    )
+    write_warm_start_manifest(
+        cfg.models_dir / WARM_START_MANIFEST_NAME,
+        checkpoint_path=latest_path,
+        config_path=cfg.config_path,
+        mode=cfg.mode,
+        num_epochs_target=num_epochs,
+        last_completed_epoch=epoch,
+        metrics_history=tracker.metrics_history,
+        best_val_loss=tracker.best_val_loss,
+        best_val_mae=tracker.best_val_mae,
+        best_val_iou=tracker.best_val_iou,
+        loss_plot_path=cfg.loss_plot_path,
+        project_root=cfg.project_root,
+        config_snapshot=cfg.config_snapshot,
+    )
 
 
 def run_training_loop(
@@ -118,338 +384,156 @@ def run_training_loop(
     mode: str = "production",
     config_snapshot: Optional[dict] = None,
 ) -> TrainingLoopResult:
-    import logging
     import mlflow
     import matplotlib.pyplot as plt
 
-    logger = logging.getLogger(__name__)
-
+    cfg = TrainingLoopConfig(
+        features_dir=features_dir, targets_dir=targets_dir,
+        normalization_stats=normalization_stats, tile_size=tile_size,
+        target_mode=target_mode, binary_threshold=binary_threshold,
+        segmentation_dir=segmentation_dir, slope_stripes_channel_dir=slope_stripes_channel_dir,
+        use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
+        iou_threshold=iou_threshold, early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta, max_grad_norm=max_grad_norm,
+        best_model_path=best_model_path, loss_plot_path=loss_plot_path,
+        run_name=run_name, train_subsample_ratio=train_subsample_ratio,
+        models_dir=models_dir, project_root=project_root,
+        config_path=config_path, mode=mode, config_snapshot=config_snapshot,
+    )
     num_epochs = config["training"]["num_epochs"]
     unfreeze_after_epoch = config["model"].get("encoder", {}).get("unfreeze_after_epoch", 0)
-    SAVE_THROTTLE_SECONDS = 3 * 60
-
-    best_tile_loss_so_far = float("inf")
-    best_tile_info_so_far = None
-    best_iou_so_far = -1.0
-    best_iou_tile_info_so_far = None
-    best_iou_tile_loss_so_far = None
-    last_time_saved = None
-    last_drawn_best_tile_id = None
-    last_drawn_best_tile_loss = None
-    last_drawn_best_iou_tile_id = None
-    last_drawn_best_iou = None
 
     if resume_state:
-        tls = resume_state
-        metrics_history = copy.deepcopy(tls["metrics_history"])
-        early_stopping_counter = int(tls["early_stopping_counter"])
-        best_val_loss_for_early_stop = float(tls["best_val_loss_for_early_stop"])
-        best_val_loss = float(tls["best_val_loss"])
-        best_val_mae = float(tls["best_val_mae"])
-        best_val_iou = float(tls["best_val_iou"])
-        bl = tls.get("baseline_mae")
-        baseline_mae = None if bl is None else float(bl)
-        encoder_unfrozen = bool(tls["encoder_unfrozen"])
-        start_epoch = int(tls["last_completed_epoch"]) + 1
-        logger.info(
-            "Resuming training from epoch %s (last completed epoch was %s)",
-            start_epoch,
-            tls["last_completed_epoch"],
-        )
+        tracker = _EpochTracker.from_resume_state(resume_state)
+        start_epoch = int(resume_state["last_completed_epoch"]) + 1
+        logger.info("Resuming training from epoch %s", start_epoch)
     else:
-        encoder_unfrozen = False
-        best_val_loss = float("inf")
-        best_val_mae = float("inf")
-        best_val_iou = 0.0
-        early_stopping_counter = 0
-        best_val_loss_for_early_stop = float("inf")
-        baseline_mae = None
-        metrics_history = {
-            "epochs": [],
-            "train_loss": [],
-            "val_loss": [],
-            "val_mae": [],
-            "val_iou": [],
-            "learning_rate": [],
-            "improvement_percent": [],
-            "early_stop_counter": [],
-        }
+        tracker = _EpochTracker()
         start_epoch = 1
 
-    current_train_loader = train_loader
-
     if start_epoch > num_epochs:
-        logger.warning(
-            "Nothing to train: next epoch would be %s but num_epochs is %s.",
-            start_epoch,
-            num_epochs,
-        )
-        tls = resume_state or {}
-        le = int(tls.get("last_completed_epoch", 0))
-        return TrainingLoopResult(
-            best_val_loss=float(tls.get("best_val_loss", float("inf"))),
-            best_val_mae=float(tls.get("best_val_mae", float("inf"))),
-            best_val_iou=float(tls.get("best_val_iou", 0.0)),
-            metrics_history=metrics_history,
-            baseline_mae=baseline_mae,
-            best_tile_info_so_far=best_tile_info_so_far,
-            best_iou_tile_info_so_far=best_iou_tile_info_so_far,
-            best_tile_loss_so_far=best_tile_loss_so_far,
-            best_iou_so_far=best_iou_so_far,
-            best_iou_tile_loss_so_far=best_iou_tile_loss_so_far,
-            last_epoch=le,
-        )
+        logger.warning("Nothing to train: next epoch would be %s but num_epochs is %s.", start_epoch, num_epochs)
+        return _build_result(tracker, resume_state)
+
+    current_train_loader = train_loader
+    epoch = start_epoch
 
     for epoch in range(start_epoch, num_epochs + 1):
-        if train_subsample_ratio < 1.0:
+        if cfg.train_subsample_ratio < 1.0:
             current_train_loader = _build_epoch_train_loader(
-                train_tiles, val_tiles, train_subsample_ratio, epoch, create_dataloaders_fn,
+                train_tiles, val_tiles, cfg.train_subsample_ratio, epoch, create_dataloaders_fn,
             )
-
-        if (unfreeze_after_epoch > 0 and epoch == unfreeze_after_epoch and
-                hasattr(model, "unfreeze_encoder") and not encoder_unfrozen):
-            logger.info("Unfreezing encoder at epoch %s", epoch)
-            model.unfreeze_encoder()
-            encoder_unfrozen = True
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = param_group["lr"] * 0.1
-            logger.info("Reduced learning rate to %s for fine-tuning", optimizer.param_groups[0]["lr"])
+        _maybe_unfreeze_encoder(model, optimizer, tracker, epoch, unfreeze_after_epoch)
 
         train_metrics = train_one_epoch(
             model, current_train_loader, criterion, optimizer, device, epoch,
-            max_grad_norm=max_grad_norm,
+            max_grad_norm=cfg.max_grad_norm,
         )
-        val_metrics, best_tile_result, best_iou_tile_result, _ = validate(
+        val_result = validate(
             model, val_loader, criterion, device, epoch,
-            iou_threshold=iou_threshold,
+            iou_threshold=cfg.iou_threshold,
             val_tile_list=val_tiles,
             return_best_tile=(trial is None),
             return_batch_losses=False,
         )
+        val_metrics = val_result.metrics
 
-        metrics_history["epochs"].append(epoch)
-        metrics_history["train_loss"].append(train_metrics["train_loss"])
-        metrics_history["val_loss"].append(val_metrics["val_loss"])
-        metrics_history["val_mae"].append(val_metrics["val_mae"])
-        metrics_history["val_iou"].append(val_metrics["val_iou"])
-        if "val_baseline_mae" in val_metrics:
-            if baseline_mae is None:
-                baseline_mae = val_metrics["val_baseline_mae"]
-            improvement = val_metrics["val_improvement_over_baseline"]
-            improvement_percent = (improvement / baseline_mae) * 100 if baseline_mae > 0 else 0.0
-            metrics_history["improvement_percent"].append(improvement_percent)
+        _record_metrics(tracker, epoch, train_metrics, val_metrics)
 
         if trial is not None:
-            if optuna_module is None:
-                raise ImportError("Optuna is required for hyperparameter tuning. Install with: poetry install")
-            trial.report(val_metrics["val_loss"], epoch)
-            if trial.should_prune():
-                logger.info("Trial %s pruned at epoch %s", trial.number, epoch)
-                if hasattr(trial, "set_user_attr"):
-                    try:
-                        trial.set_user_attr("pruned_epoch", int(epoch))
-                        trial.set_user_attr("pruned_val_loss", float(val_metrics["val_loss"]))
-                    except Exception:
-                        pass
-                active = mlflow.active_run()
-                if active is not None:
-                    print(
-                        f"[MLFLOW][OPTUNA][PRUNED] trial={trial.number} epoch={epoch} "
-                        f"experiment_id={active.info.experiment_id} run_id={active.info.run_id} run_name={run_name} "
-                        f"val_loss={val_metrics['val_loss']:.6f}",
-                        flush=True,
-                    )
-                    print(f"[MLFLOW] tracking_uri={mlflow.get_tracking_uri()}", flush=True)
-                raise optuna_module.TrialPruned()
+            _handle_optuna_pruning(trial, optuna_module, val_metrics, epoch, cfg.run_name)
 
         if lr_scheduler is not None:
             lr_scheduler.step(val_metrics["val_loss"])
             mlflow.log_metric("learning_rate", optimizer.param_groups[0]["lr"], step=epoch)
-        current_lr = float(optimizer.param_groups[0]["lr"])
-        metrics_history["learning_rate"].append(current_lr)
+        tracker.metrics_history["learning_rate"].append(float(optimizer.param_groups[0]["lr"]))
 
-        if early_stopping_patience:
-            if val_metrics["val_loss"] < best_val_loss_for_early_stop - early_stopping_min_delta:
-                best_val_loss_for_early_stop = val_metrics["val_loss"]
-                early_stopping_counter = 0
-            else:
-                early_stopping_counter += 1
-            metrics_history["early_stop_counter"].append(early_stopping_counter)
-            if early_stopping_counter >= early_stopping_patience:
-                logger.info("[EARLY STOP] No improvement for %s epochs. Stopping training.", early_stopping_patience)
-                print(
-                    f"[EARLY STOP] epoch={epoch} val_loss={val_metrics['val_loss']:.6f} "
-                    f"best_val_loss={best_val_loss_for_early_stop:.6f} patience={early_stopping_patience}",
-                    flush=True,
-                )
-                break
-        else:
-            metrics_history["early_stop_counter"].append(0)
+        should_stop = _update_early_stopping(
+            tracker, val_metrics["val_loss"], cfg.early_stopping_patience, cfg.early_stopping_min_delta, epoch,
+        )
 
         log_metrics({**train_metrics, **val_metrics}, step=epoch)
 
-        if trial is None and best_tile_result is not None:
-            tile_info, tile_loss = best_tile_result
-            if tile_loss < best_tile_loss_so_far:
-                best_tile_loss_so_far = tile_loss
-                best_tile_info_so_far = tile_info
-                logger.info("New lowest-loss tile: %s loss=%.6f", tile_info.get("tile_id", "?"), best_tile_loss_so_far)
-        if trial is None and best_iou_tile_result is not None:
-            if len(best_iou_tile_result) == 3:
-                tile_info, tile_iou, tile_loss = best_iou_tile_result
-            else:
-                tile_info, tile_iou = best_iou_tile_result
-                tile_loss = None
-            if tile_iou > best_iou_so_far:
-                best_iou_so_far = tile_iou
-                best_iou_tile_info_so_far = tile_info
-                best_iou_tile_loss_so_far = tile_loss
-                logger.info("New highest IoU tile: %s IoU=%.4f", tile_info.get("tile_id", "?"), best_iou_so_far)
+        if trial is None:
+            _track_best_tiles(tracker, val_result)
 
-        if val_metrics["val_loss"] < best_val_loss:
-            prev_best = best_val_loss
-            best_val_loss = val_metrics["val_loss"]
-            best_val_mae = val_metrics["val_mae"]
-            best_val_iou = val_metrics.get("val_iou", 0.0)
-            now = time.time()
-            may_save = last_time_saved is None or (now - last_time_saved) >= SAVE_THROTTLE_SECONDS
-            if may_save:
-                loop_state = _build_training_loop_state(
-                    metrics_history,
-                    early_stopping_counter,
-                    best_val_loss_for_early_stop,
-                    best_val_loss,
-                    best_val_mae,
-                    best_val_iou,
-                    baseline_mae,
-                    encoder_unfrozen,
-                    epoch,
-                )
-                save_training_checkpoint(
-                    best_model_path,
-                    model,
-                    optimizer,
-                    epoch,
-                    val_metrics,
-                    lr_scheduler=lr_scheduler,
-                    training_loop_state=loop_state,
-                )
-                logger.info(
-                    "New best model saved! val_loss: %.4f | val_mae: %.4f | val_iou: %.4f",
-                    best_val_loss, best_val_mae, best_val_iou,
-                )
-                if trial is None and best_tile_info_so_far is not None:
-                    bid = best_tile_info_so_far.get("tile_id")
-                    if bid != last_drawn_best_tile_id or best_tile_loss_so_far != last_drawn_best_tile_loss:
-                        fig = show_best_predicted_tile(
-                            model, best_tile_info_so_far, features_dir, targets_dir, normalization_stats,
-                            device, tile_size, iou_threshold, best_tile_loss_so_far,
-                            target_mode=target_mode, binary_threshold=binary_threshold,
-                            segmentation_base_dir=segmentation_dir, slope_stripes_base_dir=slope_stripes_channel_dir,
-                            use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
-                        )
-                        mlflow.log_figure(fig, "plots/best_predicted_tile.png")
-                        if loss_plot_path is not None:
-                            fig.savefig(loss_plot_path.parent / "best_predicted_tile.png", dpi=150, bbox_inches="tight")
-                        plt.close(fig)
-                        last_drawn_best_tile_id = bid
-                        last_drawn_best_tile_loss = best_tile_loss_so_far
-                if trial is None and best_iou_tile_info_so_far is not None:
-                    iid = best_iou_tile_info_so_far.get("tile_id")
-                    if iid != last_drawn_best_iou_tile_id or best_iou_so_far != last_drawn_best_iou:
-                        fig = show_highest_iou_tile(
-                            model, best_iou_tile_info_so_far, features_dir, targets_dir, normalization_stats,
-                            device, tile_size, iou_threshold, best_iou_so_far,
-                            target_mode=target_mode, binary_threshold=binary_threshold,
-                            segmentation_base_dir=segmentation_dir, slope_stripes_base_dir=slope_stripes_channel_dir,
-                            tile_loss=best_iou_tile_loss_so_far, use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
-                        )
-                        mlflow.log_figure(fig, "plots/best_iou_tile.png")
-                        if loss_plot_path is not None:
-                            fig.savefig(loss_plot_path.parent / "best_iou_tile.png", dpi=150, bbox_inches="tight")
-                        plt.close(fig)
-                        last_drawn_best_iou_tile_id = iid
-                        last_drawn_best_iou = best_iou_so_far
-                last_time_saved = time.time()
-            print(
-                f"[BEST] epoch={epoch} val_loss={best_val_loss:.6f} (prev_best={prev_best:.6f}) "
-                f"val_mae={best_val_mae:.6f} val_iou={best_val_iou:.6f}" + (" (saved)" if may_save else " (not saved, throttle)"),
-                flush=True,
-            )
+        _save_best_model_and_viz(tracker, model, optimizer, lr_scheduler, val_metrics, epoch, cfg, trial)
+        _log_epoch_summary(tracker, train_metrics, val_metrics, epoch, num_epochs, cfg.early_stopping_patience)
+        _log_loss_plot(tracker, cfg, mlflow, plt)
+        _save_latest_checkpoint(tracker, model, optimizer, lr_scheduler, val_metrics, epoch, cfg, num_epochs)
 
-        summary = (
-            f"[EPOCH] {epoch}/{num_epochs} train_loss={train_metrics['train_loss']:.6f} "
-            f"val_loss={val_metrics['val_loss']:.6f} val_mae={val_metrics['val_mae']:.6f} "
-            f"val_iou={val_metrics.get('val_iou', 0.0):.6f} best_val_loss={best_val_loss:.6f}"
-        )
-        if early_stopping_patience:
-            summary += f" early_stop={early_stopping_counter}/{early_stopping_patience}"
-        if "val_baseline_mae" in val_metrics:
-            baseline = float(val_metrics["val_baseline_mae"])
-            improvement = float(val_metrics["val_improvement_over_baseline"])
-            pct = (improvement / baseline * 100.0) if baseline > 0 else 0.0
-            summary += f" baseline_mae={baseline:.6f} improvement={improvement:+.6f} ({pct:+.1f}%)"
-        print(summary, flush=True)
-
-        loss_fig = plot_loss_simple(
-            metrics_history["epochs"],
-            metrics_history["train_loss"],
-            metrics_history["val_loss"],
-            learning_rate=metrics_history["learning_rate"],
-        )
-        mlflow.log_figure(loss_fig, "plots/loss.png")
-        if loss_plot_path is not None:
-            loss_fig.savefig(loss_plot_path, dpi=150, bbox_inches="tight")
-        plt.close(loss_fig)
-
-        loop_state = _build_training_loop_state(
-            metrics_history,
-            early_stopping_counter,
-            best_val_loss_for_early_stop,
-            best_val_loss,
-            best_val_mae,
-            best_val_iou,
-            baseline_mae,
-            encoder_unfrozen,
-            epoch,
-        )
-        if models_dir is not None and project_root is not None:
-            latest_path = models_dir / TRAINING_LATEST_NAME
-            save_training_checkpoint(
-                latest_path,
-                model,
-                optimizer,
-                epoch,
-                val_metrics,
-                lr_scheduler=lr_scheduler,
-                training_loop_state=loop_state,
-            )
-            write_warm_start_manifest(
-                models_dir / WARM_START_MANIFEST_NAME,
-                checkpoint_path=latest_path,
-                config_path=config_path,
-                mode=mode,
-                num_epochs_target=num_epochs,
-                last_completed_epoch=epoch,
-                metrics_history=metrics_history,
-                best_val_loss=best_val_loss,
-                best_val_mae=best_val_mae,
-                best_val_iou=best_val_iou,
-                loss_plot_path=loss_plot_path,
-                project_root=project_root,
-                config_snapshot=config_snapshot,
-            )
+        if should_stop:
+            break
 
     return TrainingLoopResult(
-        best_val_loss=best_val_loss,
-        best_val_mae=best_val_mae,
-        best_val_iou=best_val_iou,
-        metrics_history=metrics_history,
-        baseline_mae=baseline_mae,
-        best_tile_info_so_far=best_tile_info_so_far,
-        best_iou_tile_info_so_far=best_iou_tile_info_so_far,
-        best_tile_loss_so_far=best_tile_loss_so_far,
-        best_iou_so_far=best_iou_so_far,
-        best_iou_tile_loss_so_far=best_iou_tile_loss_so_far,
+        best_val_loss=tracker.best_val_loss,
+        best_val_mae=tracker.best_val_mae,
+        best_val_iou=tracker.best_val_iou,
+        metrics_history=tracker.metrics_history,
+        baseline_mae=tracker.baseline_mae,
+        best_tile_info_so_far=tracker.best_tile_info_so_far,
+        best_iou_tile_info_so_far=tracker.best_iou_tile_info_so_far,
+        best_tile_loss_so_far=tracker.best_tile_loss_so_far,
+        best_iou_so_far=tracker.best_iou_so_far,
+        best_iou_tile_loss_so_far=tracker.best_iou_tile_loss_so_far,
         last_epoch=epoch,
+    )
+
+
+def _maybe_unfreeze_encoder(
+    model: nn.Module, optimizer: torch.optim.Optimizer,
+    tracker: _EpochTracker, epoch: int, unfreeze_after_epoch: int,
+) -> None:
+    if (unfreeze_after_epoch > 0 and epoch == unfreeze_after_epoch
+            and hasattr(model, "unfreeze_encoder") and not tracker.encoder_unfrozen):
+        logger.info("Unfreezing encoder at epoch %s", epoch)
+        model.unfreeze_encoder()
+        tracker.encoder_unfrozen = True
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = param_group["lr"] * 0.1
+        logger.info("Reduced learning rate to %s for fine-tuning", optimizer.param_groups[0]["lr"])
+
+
+def _record_metrics(tracker: _EpochTracker, epoch: int, train_metrics: dict, val_metrics: dict) -> None:
+    tracker.metrics_history["epochs"].append(epoch)
+    tracker.metrics_history["train_loss"].append(train_metrics["train_loss"])
+    tracker.metrics_history["val_loss"].append(val_metrics["val_loss"])
+    tracker.metrics_history["val_mae"].append(val_metrics["val_mae"])
+    tracker.metrics_history["val_iou"].append(val_metrics["val_iou"])
+    if "val_baseline_mae" in val_metrics:
+        if tracker.baseline_mae is None:
+            tracker.baseline_mae = val_metrics["val_baseline_mae"]
+        improvement = val_metrics["val_improvement_over_baseline"]
+        improvement_percent = (improvement / tracker.baseline_mae) * 100 if tracker.baseline_mae > 0 else 0.0
+        tracker.metrics_history["improvement_percent"].append(improvement_percent)
+
+
+def _log_loss_plot(tracker: _EpochTracker, cfg: TrainingLoopConfig, mlflow, plt) -> None:
+    loss_fig = plot_loss_simple(
+        tracker.metrics_history["epochs"],
+        tracker.metrics_history["train_loss"],
+        tracker.metrics_history["val_loss"],
+        learning_rate=tracker.metrics_history["learning_rate"],
+    )
+    mlflow.log_figure(loss_fig, "plots/loss.png")
+    if cfg.loss_plot_path is not None:
+        loss_fig.savefig(cfg.loss_plot_path, dpi=150, bbox_inches="tight")
+    plt.close(loss_fig)
+
+
+def _build_result(tracker: _EpochTracker, resume_state: Optional[Dict[str, Any]]) -> TrainingLoopResult:
+    tls = resume_state or {}
+    le = int(tls.get("last_completed_epoch", 0))
+    return TrainingLoopResult(
+        best_val_loss=float(tls.get("best_val_loss", float("inf"))),
+        best_val_mae=float(tls.get("best_val_mae", float("inf"))),
+        best_val_iou=float(tls.get("best_val_iou", 0.0)),
+        metrics_history=tracker.metrics_history,
+        baseline_mae=tracker.baseline_mae,
+        best_tile_info_so_far=tracker.best_tile_info_so_far,
+        best_iou_tile_info_so_far=tracker.best_iou_tile_info_so_far,
+        best_tile_loss_so_far=tracker.best_tile_loss_so_far,
+        best_iou_so_far=tracker.best_iou_so_far,
+        best_iou_tile_loss_so_far=tracker.best_iou_tile_loss_so_far,
+        last_epoch=le,
     )

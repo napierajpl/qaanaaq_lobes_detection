@@ -22,60 +22,38 @@ def normalize_rgb(rgb_data: np.ndarray) -> np.ndarray:
     return rgb_data.astype(np.float32) / 255.0
 
 
-def standardize_dem(
-    dem_data: np.ndarray,
+def standardize_channel(
+    data: np.ndarray,
     mean: Optional[float] = None,
-    std: Optional[float] = None
+    std: Optional[float] = None,
 ) -> Tuple[np.ndarray, float, float]:
-    """
-    Standardize DEM data to mean=0, std=1.
-
-    Args:
-        dem_data: DEM array
-        mean: Precomputed mean (if None, computed from data)
-        std: Precomputed std (if None, computed from data)
-
-    Returns:
-        Tuple of (standardized array, mean, std)
-    """
+    """Standardize a single channel to mean=0, std=1. Returns (standardized, mean, std)."""
     if mean is None:
-        mean = np.mean(dem_data)
+        mean = np.mean(data)
     if std is None:
-        std = np.std(dem_data)
+        std = np.std(data)
 
     if std == 0:
         std = 1.0
 
-    standardized = (dem_data.astype(np.float32) - mean) / std
+    standardized = (data.astype(np.float32) - mean) / std
     return standardized, mean, std
+
+
+def standardize_dem(
+    dem_data: np.ndarray,
+    mean: Optional[float] = None,
+    std: Optional[float] = None,
+) -> Tuple[np.ndarray, float, float]:
+    return standardize_channel(dem_data, mean, std)
 
 
 def standardize_slope(
     slope_data: np.ndarray,
     mean: Optional[float] = None,
-    std: Optional[float] = None
+    std: Optional[float] = None,
 ) -> Tuple[np.ndarray, float, float]:
-    """
-    Standardize slope data to mean=0, std=1.
-
-    Args:
-        slope_data: Slope array
-        mean: Precomputed mean (if None, computed from data)
-        std: Precomputed std (if None, computed from data)
-
-    Returns:
-        Tuple of (standardized array, mean, std)
-    """
-    if mean is None:
-        mean = np.mean(slope_data)
-    if std is None:
-        std = np.std(slope_data)
-
-    if std == 0:
-        std = 1.0
-
-    standardized = (slope_data.astype(np.float32) - mean) / std
-    return standardized, mean, std
+    return standardize_channel(slope_data, mean, std)
 
 
 def compute_statistics(tile_paths: List[Path]) -> Dict[str, Dict[str, float]]:

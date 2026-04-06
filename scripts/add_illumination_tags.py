@@ -22,8 +22,6 @@ import rasterio
 import yaml
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.utils.path_utils import get_project_root, resolve_path
 
 

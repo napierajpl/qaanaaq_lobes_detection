@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Compare two MLflow runs."""
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def read_mlflow_value(file_path: Path) -> str:
     """Read a single value from MLflow param/metric file."""

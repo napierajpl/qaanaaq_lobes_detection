@@ -11,8 +11,6 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 
 def main():
     parser = argparse.ArgumentParser(description="Regenerate loss plots for recent MLflow runs")

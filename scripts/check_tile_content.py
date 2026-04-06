@@ -5,8 +5,6 @@ Uses the same split logic as training so you can see train/val/test content coun
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import numpy as np
 import rasterio
 

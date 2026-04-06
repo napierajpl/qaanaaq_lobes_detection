@@ -156,6 +156,19 @@ def apply_illumination_filter(
     return train_filtered, val_filtered, test_filtered
 
 
+def validate_in_channels(config: dict) -> int:
+    """Compute in_channels from feature flags and warn if the YAML value differs."""
+    computed = compute_in_channels(config["data"])
+    yaml_value = config.get("model", {}).get("in_channels")
+    if yaml_value is not None and int(yaml_value) != computed:
+        logger.warning(
+            "model.in_channels in YAML is %s but feature toggles compute %s channels. "
+            "Using computed value %s.",
+            yaml_value, computed, computed,
+        )
+    return computed
+
+
 def log_training_config_summary(resolved: ResolvedTrainingPaths, mode: str) -> None:
     r = resolved
     in_channels = compute_in_channels({
@@ -166,18 +179,22 @@ def log_training_config_summary(resolved: ResolvedTrainingPaths, mode: str) -> N
         "use_slope_stripes_channel": r.use_slope_stripes_channel,
     })
     logger.info("=== Training Configuration ===")
-    logger.info(f"Mode: {mode} (tile size: {r.tile_size}x{r.tile_size}), target_mode: {r.target_mode}")
-    logger.info(f"Filtered tiles: {r.filtered_tiles_path}")
-    logger.info(f"Features dir: {r.features_dir}")
-    logger.info(f"Targets dir: {r.targets_dir}")
-    logger.info(f"Models dir: {r.models_dir}")
-    if r.use_segmentation_layer and r.segmentation_dir:
-        logger.info(f"Segmentation dir: {r.segmentation_dir}")
-    if r.use_slope_stripes_channel and r.slope_stripes_channel_dir:
-        logger.info(f"Slope-stripes channel dir: {r.slope_stripes_channel_dir}")
     logger.info(
-        f"Input channels: rgb={r.use_rgb}, dem={r.use_dem}, slope={r.use_slope}, "
-        f"segmentation={r.use_segmentation_layer}, slope_stripes={r.use_slope_stripes_channel} -> {in_channels} channels"
+        "Mode: %s (tile size: %sx%s), target_mode: %s",
+        mode, r.tile_size, r.tile_size, r.target_mode,
+    )
+    logger.info("Filtered tiles: %s", r.filtered_tiles_path)
+    logger.info("Features dir: %s", r.features_dir)
+    logger.info("Targets dir: %s", r.targets_dir)
+    logger.info("Models dir: %s", r.models_dir)
+    if r.use_segmentation_layer and r.segmentation_dir:
+        logger.info("Segmentation dir: %s", r.segmentation_dir)
+    if r.use_slope_stripes_channel and r.slope_stripes_channel_dir:
+        logger.info("Slope-stripes channel dir: %s", r.slope_stripes_channel_dir)
+    logger.info(
+        "Input channels: rgb=%s, dem=%s, slope=%s, segmentation=%s, slope_stripes=%s -> %s channels",
+        r.use_rgb, r.use_dem, r.use_slope,
+        r.use_segmentation_layer, r.use_slope_stripes_channel, in_channels,
     )
 
 

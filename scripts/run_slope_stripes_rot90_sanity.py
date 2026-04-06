@@ -9,8 +9,6 @@ Output: structure_tensor_rot90_sanity.png, gabor_rot90_sanity.png
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import numpy as np
 import rasterio
 

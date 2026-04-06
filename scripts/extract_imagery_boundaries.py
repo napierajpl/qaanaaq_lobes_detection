@@ -2,10 +2,7 @@
 Extract valid-data boundary polygons from the reference RGB raster and write vector.
 Run once; reuse for synthetic parenthesis placement and other masking/QC.
 """
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_processing.boundary_extraction import (
     extract_boundaries_from_raster,

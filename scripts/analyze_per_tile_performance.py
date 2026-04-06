@@ -8,12 +8,9 @@ This script helps identify:
 - Whether improvements are real or just due to tile-specific properties
 """
 
-import sys
 import json
 from pathlib import Path
 from typing import Dict
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import rasterio

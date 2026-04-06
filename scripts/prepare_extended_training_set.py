@@ -23,8 +23,6 @@ import torch
 from torchvision.transforms.functional import adjust_contrast, adjust_saturation
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.training.dataloader import (
     load_filtered_tiles,
     create_data_splits,

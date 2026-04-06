@@ -6,8 +6,6 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.map_overlays.tile_registry import TileRegistry
 from src.map_overlays.shapefile_generator import generate_tile_index_shapefile
 from src.map_overlays.tile_index_utils import resolve_background_train_ids

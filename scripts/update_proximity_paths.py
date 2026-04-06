@@ -5,8 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.utils.path_utils import get_project_root, resolve_path
 
 

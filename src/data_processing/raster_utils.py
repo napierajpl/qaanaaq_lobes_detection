@@ -24,17 +24,23 @@ class ProximityMapGenerator:
         self.max_value = max_value
         self.max_distance = max_distance
 
-    def load_binary_raster(self, raster_path: Path) -> Tuple[np.ndarray, rasterio.DatasetReader]:
-        """Load binary raster and return array with metadata."""
+    def load_binary_raster(self, raster_path: Path) -> Tuple[np.ndarray, dict]:
+        """Load binary raster and return array with metadata dict (height, width, crs, transform)."""
         raster_path = Path(raster_path)
 
         if not raster_path.exists():
             raise FileNotFoundError(f"Raster file not found: {raster_path}")
 
-        src = rasterio.open(raster_path)
-        raster = src.read(1)
+        with rasterio.open(raster_path) as src:
+            raster = src.read(1)
+            meta = {
+                "height": src.height,
+                "width": src.width,
+                "crs": src.crs,
+                "transform": src.transform,
+            }
 
-        return raster, src
+        return raster, meta
 
     def create_binary_mask(self, raster: np.ndarray, lobe_value: int = 1) -> np.ndarray:
         """Create binary mask from raster (lobes = True, background = False)."""
@@ -65,7 +71,7 @@ class ProximityMapGenerator:
             output_raster_path: Path to output proximity map
             lobe_value: Value representing lobes in input raster
         """
-        raster, src = self.load_binary_raster(input_raster_path)
+        raster, meta = self.load_binary_raster(input_raster_path)
         binary_mask = self.create_binary_mask(raster, lobe_value)
         distance_map = self.calculate_distance_transform(binary_mask)
         proximity_map = self.apply_decay_function(distance_map)
@@ -76,18 +82,16 @@ class ProximityMapGenerator:
             output_raster_path,
             'w',
             driver='GTiff',
-            height=src.height,
-            width=src.width,
+            height=meta["height"],
+            width=meta["width"],
             count=1,
             dtype=proximity_map.dtype,
-            crs=src.crs,
-            transform=src.transform,
+            crs=meta["crs"],
+            transform=meta["transform"],
             nodata=0,
             compress='lzw',
         ) as dst:
             dst.write(proximity_map, 1)
-
-        src.close()
 
 
 def generate_proximity_map(
@@ -248,53 +252,51 @@ class RasterCropper:
         Returns:
             Path to output cropped raster
         """
-        src = self.load_raster(input_raster_path)
+        with rasterio.open(input_raster_path) as src:
+            if use_geographic:
+                top_left_x, top_left_y = self.convert_geographic_to_projected(
+                    top_left_x, top_left_y, src.crs
+                )
 
-        if use_geographic:
-            top_left_x, top_left_y = self.convert_geographic_to_projected(
-                top_left_x, top_left_y, src.crs
+            row_start, row_stop, col_start, col_stop = self.calculate_crop_window(
+                top_left_x, top_left_y, width_pixels, height_pixels, src
             )
 
-        row_start, row_stop, col_start, col_stop = self.calculate_crop_window(
-            top_left_x, top_left_y, width_pixels, height_pixels, src
-        )
+            data, _ = self.crop_raster_window(src, row_start, row_stop, col_start, col_stop)
 
-        data, _ = self.crop_raster_window(src, row_start, row_stop, col_start, col_stop)
+            if data.size > 0 and data.max() == 255 and data.min() == 255:
+                import warnings
+                warnings.warn(
+                    f"Warning: Cropped data appears to be all white (255). "
+                    f"Top-left pixel: {data[:, 0, 0] if data.shape[0] > 0 else 'N/A'}"
+                )
 
-        if data.size > 0 and data.max() == 255 and data.min() == 255:
-            import warnings
-            warnings.warn(
-                f"Warning: Cropped data appears to be all white (255). "
-                f"Top-left pixel: {data[:, 0, 0] if data.shape[0] > 0 else 'N/A'}"
+            crop_transform = self.create_crop_transform(
+                top_left_x,
+                top_left_y,
+                src.transform,
             )
 
-        crop_transform = self.create_crop_transform(
-            top_left_x,
-            top_left_y,
-            src.transform,
-        )
+            output_path = self.generate_output_filename(
+                input_raster_path, width_pixels, height_pixels, output_raster_path
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        output_path = self.generate_output_filename(
-            input_raster_path, width_pixels, height_pixels, output_raster_path
-        )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(
+                output_path,
+                'w',
+                driver='GTiff',
+                height=height_pixels,
+                width=width_pixels,
+                count=src.count,
+                dtype=data.dtype,
+                crs=src.crs,
+                transform=crop_transform,
+                nodata=src.nodata,
+                compress='lzw',
+            ) as dst:
+                dst.write(data, indexes=list(range(1, src.count + 1)))
 
-        with rasterio.open(
-            output_path,
-            'w',
-            driver='GTiff',
-            height=height_pixels,
-            width=width_pixels,
-            count=src.count,
-            dtype=data.dtype,
-            crs=src.crs,
-            transform=crop_transform,
-            nodata=src.nodata,
-            compress='lzw',
-        ) as dst:
-            dst.write(data, indexes=list(range(1, src.count + 1)))
-
-        src.close()
         return output_path
 
 
@@ -342,35 +344,26 @@ class VirtualRasterStacker:
         if not raster_paths:
             raise ValueError("No raster paths provided")
 
-        first_src = rasterio.open(raster_paths[0])
-        first_shape = (first_src.height, first_src.width)
-        first_crs = first_src.crs
-        first_transform = first_src.transform
+        with rasterio.open(raster_paths[0]) as first_src:
+            first_shape = (first_src.height, first_src.width)
+            first_crs = first_src.crs
+            first_transform = first_src.transform
 
         for i, path in enumerate(raster_paths[1:], 1):
-            src = rasterio.open(path)
-            if (src.height, src.width) != first_shape:
-                src.close()
-                first_src.close()
-                raise ValueError(
-                    f"Raster {i} ({path}) has incompatible shape: "
-                    f"{(src.height, src.width)} vs {first_shape}"
-                )
-            if src.crs != first_crs:
-                src.close()
-                first_src.close()
-                raise ValueError(
-                    f"Raster {i} ({path}) has incompatible CRS: {src.crs} vs {first_crs}"
-                )
-            if src.transform != first_transform:
-                src.close()
-                first_src.close()
-                raise ValueError(
-                    f"Raster {i} ({path}) has incompatible transform. Consider resampling first."
-                )
-            src.close()
-
-        first_src.close()
+            with rasterio.open(path) as src:
+                if (src.height, src.width) != first_shape:
+                    raise ValueError(
+                        f"Raster {i} ({path}) has incompatible shape: "
+                        f"{(src.height, src.width)} vs {first_shape}"
+                    )
+                if src.crs != first_crs:
+                    raise ValueError(
+                        f"Raster {i} ({path}) has incompatible CRS: {src.crs} vs {first_crs}"
+                    )
+                if src.transform != first_transform:
+                    raise ValueError(
+                        f"Raster {i} ({path}) has incompatible transform. Consider resampling first."
+                    )
 
     def create_vrt_stack(
         self,
@@ -395,11 +388,13 @@ class VirtualRasterStacker:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        first_src = rasterio.open(raster_paths[0])
-        total_bands = sum(rasterio.open(path).count for path in raster_paths)
+        total_bands = 0
+        for path in raster_paths:
+            with rasterio.open(path) as src:
+                total_bands += src.count
 
-        vrt_content = self._generate_vrt_xml(raster_paths, first_src, total_bands)
-        first_src.close()
+        with rasterio.open(raster_paths[0]) as first_src:
+            vrt_content = self._generate_vrt_xml(raster_paths, first_src, total_bands)
 
         output_path.write_text(vrt_content, encoding='utf-8')
 
@@ -431,29 +426,27 @@ class VirtualRasterStacker:
 
         band_idx = 1
         for raster_path in raster_paths:
-            src = rasterio.open(raster_path)
             abs_path = Path(raster_path).absolute().as_posix()
 
-            for band_num in range(1, src.count + 1):
-                xml_parts.append(
-                    f'  <VRTRasterBand dataType="{self._get_gdal_datatype(src.dtypes[band_num-1])}" '
-                    f'band="{band_idx}">'
-                )
-                xml_parts.append('    <SimpleSource>')
-                xml_parts.append(f'      <SourceFilename relativeToVRT="0">{abs_path}</SourceFilename>')
-                xml_parts.append(f'      <SourceBand>{band_num}</SourceBand>')
-                xml_parts.append(f'      <SourceProperties RasterXSize="{src.width}" '
-                               f'RasterYSize="{src.height}" '
-                               f'DataType="{self._get_gdal_datatype(src.dtypes[band_num-1])}" '
-                               f'BlockXSize="{src.block_shapes[0][1]}" '
-                               f'BlockYSize="{src.block_shapes[0][0]}"/>')
-                xml_parts.append(f'      <SrcRect xOff="0" yOff="0" xSize="{src.width}" ySize="{src.height}"/>')
-                xml_parts.append(f'      <DstRect xOff="0" yOff="0" xSize="{src.width}" ySize="{src.height}"/>')
-                xml_parts.append('    </SimpleSource>')
-                xml_parts.append('  </VRTRasterBand>')
-                band_idx += 1
-
-            src.close()
+            with rasterio.open(raster_path) as src:
+                for band_num in range(1, src.count + 1):
+                    xml_parts.append(
+                        f'  <VRTRasterBand dataType="{self._get_gdal_datatype(src.dtypes[band_num-1])}" '
+                        f'band="{band_idx}">'
+                    )
+                    xml_parts.append('    <SimpleSource>')
+                    xml_parts.append(f'      <SourceFilename relativeToVRT="0">{abs_path}</SourceFilename>')
+                    xml_parts.append(f'      <SourceBand>{band_num}</SourceBand>')
+                    xml_parts.append(f'      <SourceProperties RasterXSize="{src.width}" '
+                                   f'RasterYSize="{src.height}" '
+                                   f'DataType="{self._get_gdal_datatype(src.dtypes[band_num-1])}" '
+                                   f'BlockXSize="{src.block_shapes[0][1]}" '
+                                   f'BlockYSize="{src.block_shapes[0][0]}"/>')
+                    xml_parts.append(f'      <SrcRect xOff="0" yOff="0" xSize="{src.width}" ySize="{src.height}"/>')
+                    xml_parts.append(f'      <DstRect xOff="0" yOff="0" xSize="{src.width}" ySize="{src.height}"/>')
+                    xml_parts.append('    </SimpleSource>')
+                    xml_parts.append('  </VRTRasterBand>')
+                    band_idx += 1
 
         xml_parts.append('</VRTDataset>')
 

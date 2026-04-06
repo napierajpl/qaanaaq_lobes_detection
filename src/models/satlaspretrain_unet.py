@@ -6,6 +6,8 @@ import logging
 import torch
 import torch.nn as nn
 
+from src.models.architectures import _bound_proximity
+
 # Optional dependency - import at top level per cursorrules
 try:
     import satlaspretrain_models
@@ -314,7 +316,6 @@ class SatlasPretrainUNet(nn.Module):
 
         output = self.final_conv(dec1)
         if self.proximity_max > 0:
-            from src.models.architectures import _bound_proximity
             output = _bound_proximity(
                 output,
                 self.proximity_max,

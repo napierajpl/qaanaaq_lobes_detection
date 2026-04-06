@@ -4,10 +4,7 @@ boundary polygons (avoiding white), then tile to 256 and 512.
 Produces same target raster for learning (0/20). Run extract_imagery_boundaries.py first.
 """
 import json
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import rasterio

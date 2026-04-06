@@ -1,0 +1,53 @@
+# Data pipeline paths and parameters.
+# Used by: src/data_processing/prepare_training_steps.py
+#
+# Raw inputs are shared between dev and production pipelines.
+# Dev paths point to cropped intermediates under data/processed/raster/dev/.
+
+raw:
+  rgb: "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif"
+  dem: "data/raw/raster/dem/dem_from_arcticDEM_cropped2.tif"
+  slope: "data/raw/raster/dem/slope_from_dem_cropped.tif"
+
+processed:
+  lobes_raster: "data/processed/raster/rasterized_lobes_raw_by_code.tif"
+
+production:
+  proximity_map: "data/processed/raster/rasterized_lobes_raw_by_code_proximity20px.tif"
+  dem_resampled: "data/processed/raster/dem_from_arcticDEM_resampled.tif"
+  slope_resampled: "data/processed/raster/slope_from_dem_resampled.tif"
+  slope_stripes: "data/processed/raster/slope_stripes_channel.tif"
+  features_vrt: "data/processed/raster/features_combined.vrt"
+
+dev:
+  rgb_cropped: "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif"
+  dem_cropped: "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024.tif"
+  slope_cropped: "data/processed/raster/dev/slope_from_dem_cropped1024x1024.tif"
+  lobes_cropped: "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024.tif"
+  dem_resampled: "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif"
+  slope_resampled: "data/processed/raster/dev/slope_from_dem_cropped1024x1024_resampled.tif"
+  slope_stripes: "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif"
+  proximity_map: "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024_proximity20px.tif"
+  features_vrt: "data/processed/raster/dev/features_combined_cropped1024x1024.vrt"
+
+dev_crop:
+  lon: "-69.2674970"
+  lat: "77.4766436"
+  width: 1024
+  height: 1024
+
+proximity:
+  max_value: 20
+  max_distance: 20
+
+gabor:
+  method: "gabor"
+  frequency: 0.15
+  sigma: 5.0
+  alignment_power: 5
+
+tiling:
+  overlap: 0.3
+
+filtering:
+  lobe_threshold: 5.0

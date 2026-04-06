@@ -3,10 +3,7 @@ Filter filtered_tiles.json to only tiles that intersect the research boundary.
 Use the output as filtered_tiles (or replace) to limit training to the boundary.
 Run create_tile_registry first if you want to use --registry for faster filtering.
 """
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_processing.boundary_tile_filter import filter_filtered_tiles_by_boundary
 from src.utils.path_utils import get_project_root, resolve_path

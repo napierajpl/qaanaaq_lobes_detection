@@ -5,15 +5,12 @@ Train CNN model for lobe detection.
 
 import copy
 import logging
-import sys
 import time
 import warnings
 import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
     import optuna
@@ -34,6 +31,7 @@ from src.utils.config_utils import (
 from src.training.training_config import (
     resolve_training_paths,
     compute_in_channels,
+    validate_in_channels,
     get_normalization_stats,
     log_training_config_summary,
 )
@@ -109,7 +107,7 @@ def train_model_with_config(
     """
     project_root = get_project_root(Path(__file__))
     resolved = resolve_training_paths(config, mode, project_root, filtered_tiles_override)
-    in_channels = compute_in_channels(config["data"])
+    in_channels = validate_in_channels(config)
     log_training_config_summary(resolved, mode)
 
     filtered_tiles_path = resolved.filtered_tiles_path

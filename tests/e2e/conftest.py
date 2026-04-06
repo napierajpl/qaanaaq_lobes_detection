@@ -2,8 +2,6 @@ import pytest
 import yaml
 from pathlib import Path
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from src.utils.path_utils import get_project_root
 
 
@@ -31,6 +29,7 @@ def make_minimal_config(project_root: Path, out_path: Path) -> Path:
     config["data"]["use_slope"] = True
     config["data"]["use_segmentation_layer"] = False
     config["data"]["use_slope_stripes_channel"] = False
+    config["data"]["illumination_filter"] = None
     config["training"]["num_epochs"] = 1
     config["training"]["early_stopping_patience"] = 1
     with open(out_path, "w", encoding="utf-8") as f:

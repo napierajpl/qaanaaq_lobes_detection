@@ -5,10 +5,7 @@ For large rasters, uses block processing.
 """
 
 import argparse
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.preprocessing.slope_stripes_raster import create_slope_stripes_channel_raster
 from src.utils.path_utils import get_project_root, resolve_path

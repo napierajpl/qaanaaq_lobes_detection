@@ -81,5 +81,3 @@ def create_model(config: Dict[str, Any]) -> nn.Module:
             output_activation=config.get("output_activation", "clamp"),
             sigmoid_temperature=float(config.get("sigmoid_temperature", 0.3)),
         )
-    else:
-        raise ValueError(f"Unknown architecture: {architecture}. Supported: 'unet', 'satlaspretrain_unet'")

@@ -8,12 +8,9 @@ This script calculates what MAE, RMSE, and IoU we would get from naive baselines
 - Predicting median proximity value everywhere
 """
 
-import sys
 import json
 import numpy as np
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import rasterio
 from src.training.dataloader import load_filtered_tiles

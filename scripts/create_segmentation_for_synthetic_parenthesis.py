@@ -15,8 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from src.utils.path_utils import get_project_root, resolve_path
 
 OLD_RASTER_DIR = "data/processed/tiles/raster"

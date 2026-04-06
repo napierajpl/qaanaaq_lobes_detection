@@ -5,8 +5,6 @@ import logging
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.map_overlays.tile_registry import TileRegistry
 from src.utils.path_utils import get_project_root, resolve_path
 

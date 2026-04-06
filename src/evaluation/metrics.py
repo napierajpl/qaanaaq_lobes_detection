@@ -41,7 +41,7 @@ def compute_iou(pred: torch.Tensor, target: torch.Tensor, threshold: float = 5.0
     Args:
         pred: Predicted values
         target: Target values
-        threshold: Threshold to consider as lobe (default: 8.0)
+        threshold: Threshold to consider as lobe (default: 5.0)
 
     Returns:
         IoU value

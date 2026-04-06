@@ -5,10 +5,7 @@ Filter training tiles based on data quality.
 Excludes tiles with empty RGB data and optionally filters background-only tiles.
 """
 
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data_processing.tile_filter import TileFilter
 from src.utils.cli_utils import BaseCLIParser

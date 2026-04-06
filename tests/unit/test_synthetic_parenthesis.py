@@ -28,7 +28,7 @@ class TestGetTrainingPathKey:
         assert get_training_path_key("synthetic_parenthesis", 512) == "synthetic_parenthesis_512"
 
     def test_synthetic_parenthesis_256_still_returns_256_key(self):
-        assert get_training_path_key("synthetic_parenthesis", 256) == "synthetic_parenthesis"
+        assert get_training_path_key("synthetic_parenthesis", 256) == "synthetic_parenthesis_256"
 
 
 class TestGenerateSyntheticParenthesisDataset:
@@ -72,10 +72,10 @@ class TestGenerateSyntheticParenthesisDataset:
     def test_generate_dataset_creates_structure(
         self, source_tile_dir, tmp_path
     ):
-        from scripts.generate_synthetic_parenthesis_dataset import generate_dataset
+        from src.data_processing.synthetic_parenthesis import generate_synthetic_parenthesis_dataset
 
         out = tmp_path / "out"
-        generate_dataset(
+        generate_synthetic_parenthesis_dataset(
             source_filtered_tiles=source_tile_dir / "filtered_tiles.json",
             source_features_dir=source_tile_dir / "features",
             output_dir=out,
@@ -96,10 +96,10 @@ class TestGenerateSyntheticParenthesisDataset:
     def test_generate_dataset_output_raster_shapes(
         self, source_tile_dir, tmp_path
     ):
-        from scripts.generate_synthetic_parenthesis_dataset import generate_dataset
+        from src.data_processing.synthetic_parenthesis import generate_synthetic_parenthesis_dataset
 
         out = tmp_path / "out"
-        generate_dataset(
+        generate_synthetic_parenthesis_dataset(
             source_filtered_tiles=source_tile_dir / "filtered_tiles.json",
             source_features_dir=source_tile_dir / "features",
             output_dir=out,

@@ -13,9 +13,6 @@ from pathlib import Path
 
 import pytest
 
-import sys as _sys
-_sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
 from tests.e2e.conftest import dev_data_ready, make_minimal_config
 
 pytestmark = pytest.mark.e2e

@@ -71,7 +71,7 @@ def prompt_run_intention(trial: Optional[Any]) -> Optional[str]:
     if active is not None:
         suggestion = get_intention_suggestion(active.info.experiment_id, active.info.run_id)
         if suggestion:
-            print(f"Suggestion: {suggestion}", flush=True)
+            logger.info("Suggestion: %s", suggestion)
     try:
         run_intention = input("Run intention (subtitle): ").strip() or None
     except EOFError:
@@ -82,16 +82,16 @@ def prompt_run_intention(trial: Optional[Any]) -> Optional[str]:
 
 
 def get_loss_plot_path_and_print_run_start(run_name: str) -> Optional[Path]:
-    """Call inside mlflow.start_run(). Prints [MLFLOW][START], returns loss plot path if file tracking."""
+    """Call inside mlflow.start_run(). Logs run start, returns loss plot path if file tracking."""
     active = mlflow.active_run()
     if active is None:
         return None
     exp_id = active.info.experiment_id
     run_id = active.info.run_id
     tracking_uri = mlflow.get_tracking_uri()
-    print(
-        f"[MLFLOW][START] experiment_id={exp_id} run_id={run_id} run_name={run_name}",
-        flush=True,
+    logger.info(
+        "MLFLOW START experiment_id=%s run_id=%s run_name=%s",
+        exp_id, run_id, run_name,
     )
     loss_plot_path = None
     if tracking_uri.startswith("file:"):
@@ -99,8 +99,8 @@ def get_loss_plot_path_and_print_run_start(run_name: str) -> Optional[Path]:
         plots_dir = Path(base) / str(exp_id) / run_id / "artifacts" / "plots"
         loss_plot_path = plots_dir / "loss.png"
         plots_dir.mkdir(parents=True, exist_ok=True)
-        print(f"  Plots (updated each epoch): {loss_plot_path}", flush=True)
-    print(f"  tracking_uri={tracking_uri}", flush=True)
+        logger.info("Plots (updated each epoch): %s", loss_plot_path)
+    logger.info("tracking_uri=%s", tracking_uri)
     return loss_plot_path
 
 
@@ -188,7 +188,7 @@ def log_run_config_and_trial_metadata(
             trial.set_user_attr("targets_dir", str(targets_dir))
             trial.set_user_attr("proximity_token", infer_proximity_token(str(targets_dir)))
         except Exception:
-            pass
+            logger.debug("Failed to set trial user attributes", exc_info=True)
 
     mlflow.log_param("model.architecture", architecture)
     if architecture == "satlaspretrain_unet":

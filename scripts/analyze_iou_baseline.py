@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """Analyze IoU baseline for random predictions with different proximity zones."""
 
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.evaluation.baseline_iou import analyze_random_baseline_iou
 from src.utils.path_utils import get_project_root

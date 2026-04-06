@@ -2,9 +2,6 @@
 """Script to resample a raster to match another raster's transform and dimensions."""
 
 from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data_processing.raster_utils import resample_raster_to_match
 from src.utils.cli_utils import BaseCLIParser

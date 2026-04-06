@@ -2,9 +2,6 @@
 """Script to stack multiple rasters into a single multi-band raster."""
 
 from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data_processing.raster_utils import stack_rasters
 from src.utils.cli_utils import BaseCLIParser

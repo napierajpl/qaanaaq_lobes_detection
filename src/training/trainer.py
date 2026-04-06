@@ -2,6 +2,8 @@
 Training utilities.
 """
 
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple
 
@@ -12,6 +14,16 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.evaluation.metrics import compute_mae, compute_rmse, compute_iou
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ValidationResult:
+    metrics: Dict[str, float]
+    best_tile: Optional[Tuple[dict, float]] = None
+    best_iou_tile: Optional[Tuple[dict, float, float]] = None
+    batch_losses: Optional[List[float]] = None
 
 
 def train_one_epoch(
@@ -94,6 +106,75 @@ def train_one_epoch(
     }
 
 
+def _compute_baseline_mae(val_tile_list: Optional[List[dict]]) -> Tuple[float, int]:
+    baseline_mae_sum = 0.0
+    baseline_tile_count = 0
+    if val_tile_list:
+        for tile_info in val_tile_list:
+            baseline_metrics = tile_info.get("target_stats", {}).get("baseline_metrics", {})
+            if baseline_metrics:
+                baseline_mae = baseline_metrics.get("baseline_mae", {}).get("predict_zero", None)
+                if baseline_mae is not None:
+                    baseline_mae_sum += baseline_mae
+                    baseline_tile_count += 1
+    return baseline_mae_sum, baseline_tile_count
+
+
+def _track_best_tiles(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    criterion: nn.Module,
+    val_tile_list: List[dict],
+    tile_index: int,
+    iou_threshold: float,
+    best_tile_result: Optional[Tuple[dict, float]],
+    best_iou_tile_result: Optional[Tuple[dict, float, float]],
+) -> Tuple[int, Optional[Tuple[dict, float]], Optional[Tuple[dict, float, float]]]:
+    batch_size = outputs.size(0)
+    for i in range(batch_size):
+        if tile_index >= len(val_tile_list):
+            break
+        sample_loss = criterion(outputs[i : i + 1], targets[i : i + 1]).item()
+        sample_iou = compute_iou(outputs[i : i + 1], targets[i : i + 1], threshold=iou_threshold)
+        if best_tile_result is None or sample_loss < best_tile_result[1]:
+            best_tile_result = (val_tile_list[tile_index].copy(), sample_loss)
+        if best_iou_tile_result is None or sample_iou > best_iou_tile_result[1]:
+            best_iou_tile_result = (val_tile_list[tile_index].copy(), sample_iou, sample_loss)
+        tile_index += 1
+    return tile_index, best_tile_result, best_iou_tile_result
+
+
+def _log_prediction_diagnostics(
+    all_pred_values: np.ndarray,
+    all_target_values: np.ndarray,
+    iou_threshold: float,
+) -> None:
+    pred_min = float(np.min(all_pred_values))
+    pred_max = float(np.max(all_pred_values))
+    pred_mean = float(np.mean(all_pred_values))
+    pred_median = float(np.median(all_pred_values))
+    target_min = float(np.min(all_target_values))
+    target_max = float(np.max(all_target_values))
+    target_mean = float(np.mean(all_target_values))
+    pred_above = np.sum(all_pred_values >= iou_threshold)
+    target_above = np.sum(all_target_values >= iou_threshold)
+    n_pred = len(all_pred_values)
+    n_target = len(all_target_values)
+    logger.info(
+        "Prediction stats: min=%.3f, max=%.3f, mean=%.3f, median=%.3f",
+        pred_min, pred_max, pred_mean, pred_median,
+    )
+    logger.info(
+        "Target stats: min=%.3f, max=%.3f, mean=%.3f",
+        target_min, target_max, target_mean,
+    )
+    logger.info(
+        "Pixels >= %.1f: pred=%d (%.2f%%), target=%d (%.2f%%)",
+        iou_threshold, pred_above, pred_above / n_pred * 100,
+        target_above, target_above / n_target * 100,
+    )
+
+
 def validate(
     model: nn.Module,
     val_loader: DataLoader,
@@ -104,25 +185,7 @@ def validate(
     val_tile_list: Optional[List[dict]] = None,
     return_best_tile: bool = False,
     return_batch_losses: bool = False,
-) -> Tuple[Dict[str, float], Optional[Tuple[dict, float]], Optional[Tuple[dict, float]], Optional[List[float]]]:
-    """
-    Validate model.
-
-    Args:
-        model: Model to validate
-        val_loader: Validation data loader
-        criterion: Loss function
-        device: Device to validate on
-        epoch: Current epoch number
-        iou_threshold: Threshold for IoU calculation
-        val_tile_list: Optional list of validation tile info (for baseline comparison)
-        return_best_tile: If True and val_tile_list provided, return lowest-loss and highest-IoU tiles
-        return_batch_losses: If True, return list of per-batch validation losses (for spike debugging)
-
-    Returns:
-        (metrics_dict, best_tile_result, best_iou_tile_result, batch_losses).
-        batch_losses is None unless return_batch_losses=True.
-    """
+) -> ValidationResult:
     model.eval()
 
     total_loss = 0.0
@@ -130,29 +193,16 @@ def validate(
     total_rmse = 0.0
     total_iou = 0.0
     num_batches = 0
-    batch_losses: List[float] = [] if return_batch_losses else []
+    batch_losses: List[float] = []
 
     best_tile_result: Optional[Tuple[dict, float]] = None
-    best_iou_tile_result: Optional[Tuple[dict, float, float]] = None  # (tile_info, iou, loss)
+    best_iou_tile_result: Optional[Tuple[dict, float, float]] = None
     tile_index = 0
 
-    # For baseline comparison - compute aggregate baseline MAE from tile list
-    baseline_mae_sum = 0.0
-    baseline_tile_count = 0
-
-    if val_tile_list:
-        for tile_info in val_tile_list:
-            baseline_metrics = tile_info.get("target_stats", {}).get("baseline_metrics", {})
-            if baseline_metrics:
-                baseline_mae = baseline_metrics.get("baseline_mae", {}).get("predict_zero", None)
-                if baseline_mae is not None:
-                    baseline_mae_sum += baseline_mae
-                    baseline_tile_count += 1
+    baseline_mae_sum, baseline_tile_count = _compute_baseline_mae(val_tile_list)
 
     with torch.no_grad():
         pbar = tqdm(val_loader, desc=f"Epoch {epoch} [Val]")
-
-        # Track prediction statistics for diagnostics
         all_pred_values = []
         all_target_values = []
 
@@ -160,36 +210,19 @@ def validate(
             features = features.to(device)
             targets = targets.to(device)
 
-            # Forward pass
             outputs = model(features)
-
-            # Compute loss
             loss = criterion(outputs, targets)
 
-            # Metrics
             mae = compute_mae(outputs, targets)
             rmse = compute_rmse(outputs, targets)
             iou = compute_iou(outputs, targets, threshold=iou_threshold)
 
-            # Per-sample loss and IoU for best-tile tracking
             if return_best_tile and val_tile_list is not None:
-                batch_size = outputs.size(0)
-                for i in range(batch_size):
-                    if tile_index >= len(val_tile_list):
-                        break
-                    sample_loss = criterion(
-                        outputs[i : i + 1], targets[i : i + 1]
-                    ).item()
-                    sample_iou = compute_iou(
-                        outputs[i : i + 1], targets[i : i + 1], threshold=iou_threshold
-                    )
-                    if best_tile_result is None or sample_loss < best_tile_result[1]:
-                        best_tile_result = (val_tile_list[tile_index].copy(), sample_loss)
-                    if best_iou_tile_result is None or sample_iou > best_iou_tile_result[1]:
-                        best_iou_tile_result = (val_tile_list[tile_index].copy(), sample_iou, sample_loss)
-                    tile_index += 1
+                tile_index, best_tile_result, best_iou_tile_result = _track_best_tiles(
+                    outputs, targets, criterion, val_tile_list, tile_index, iou_threshold,
+                    best_tile_result, best_iou_tile_result,
+                )
 
-            # Collect statistics for diagnostics
             all_pred_values.append(outputs.cpu().numpy().flatten())
             all_target_values.append(targets.cpu().numpy().flatten())
 
@@ -201,33 +234,15 @@ def validate(
             if return_batch_losses:
                 batch_losses.append(loss.item())
 
-            # Update progress bar
             pbar.set_postfix({
                 "loss": f"{loss.item():.4f}",
                 "mae": f"{mae:.4f}",
                 "iou": f"{iou:.4f}",
             })
 
-        # Compute prediction statistics
-        all_pred_values = np.concatenate(all_pred_values)
-        all_target_values = np.concatenate(all_target_values)
-
-        pred_min = float(np.min(all_pred_values))
-        pred_max = float(np.max(all_pred_values))
-        pred_mean = float(np.mean(all_pred_values))
-        pred_median = float(np.median(all_pred_values))
-
-        target_min = float(np.min(all_target_values))
-        target_max = float(np.max(all_target_values))
-        target_mean = float(np.mean(all_target_values))
-
-        # Count predictions above threshold
-        pred_above_threshold = np.sum(all_pred_values >= iou_threshold)
-        target_above_threshold = np.sum(all_target_values >= iou_threshold)
-
-        print(f"\n  [DIAGNOSTICS] Prediction stats: min={pred_min:.3f}, max={pred_max:.3f}, mean={pred_mean:.3f}, median={pred_median:.3f}")
-        print(f"  [DIAGNOSTICS] Target stats: min={target_min:.3f}, max={target_max:.3f}, mean={target_mean:.3f}")
-        print(f"  [DIAGNOSTICS] Pixels >= {iou_threshold}: pred={pred_above_threshold:,} ({pred_above_threshold/len(all_pred_values)*100:.2f}%), target={target_above_threshold:,} ({target_above_threshold/len(all_target_values)*100:.2f}%)")
+        all_preds = np.concatenate(all_pred_values)
+        all_targets = np.concatenate(all_target_values)
+        _log_prediction_diagnostics(all_preds, all_targets, iou_threshold)
 
     avg_loss = total_loss / num_batches
     avg_mae = total_mae / num_batches
@@ -239,23 +254,24 @@ def validate(
         "val_mae": avg_mae,
         "val_rmse": avg_rmse,
         "val_iou": avg_iou,
-        "val_pred_min": pred_min,
-        "val_pred_max": pred_max,
-        "val_pred_mean": pred_mean,
+        "val_pred_min": float(np.min(all_preds)),
+        "val_pred_max": float(np.max(all_preds)),
+        "val_pred_mean": float(np.mean(all_preds)),
     }
 
-    # Add baseline comparison if tile info available
     if baseline_tile_count > 0:
         avg_baseline_mae = baseline_mae_sum / baseline_tile_count
         improvement = avg_baseline_mae - avg_mae
-        is_better = avg_mae < avg_baseline_mae
-
         metrics["val_baseline_mae"] = avg_baseline_mae
         metrics["val_improvement_over_baseline"] = improvement
-        metrics["val_better_than_baseline"] = float(is_better)  # 1.0 if better, 0.0 if not
+        metrics["val_better_than_baseline"] = float(avg_mae < avg_baseline_mae)
 
-    out_batch_losses = batch_losses if return_batch_losses else None
-    return (metrics, best_tile_result, best_iou_tile_result, out_batch_losses)
+    return ValidationResult(
+        metrics=metrics,
+        best_tile=best_tile_result,
+        best_iou_tile=best_iou_tile_result,
+        batch_losses=batch_losses if return_batch_losses else None,
+    )
 
 
 def save_training_checkpoint(

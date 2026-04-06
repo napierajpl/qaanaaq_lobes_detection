@@ -8,10 +8,7 @@ Synthetic mode is 512x512 only. Train with: --mode synthetic_parenthesis
 """
 
 import argparse
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_processing.synthetic_parenthesis import generate_synthetic_parenthesis_dataset
 from src.utils.path_utils import get_project_root, resolve_path

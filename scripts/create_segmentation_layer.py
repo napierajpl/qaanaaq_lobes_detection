@@ -6,10 +6,7 @@ For large rasters, uses block processing to avoid loading full image.
 """
 
 import argparse
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data_processing.segmentation_layer import create_segmentation_layer
 from src.utils.path_utils import get_project_root, resolve_path

@@ -15,8 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import yaml
 
 from src.training.training_config import resolve_training_paths
