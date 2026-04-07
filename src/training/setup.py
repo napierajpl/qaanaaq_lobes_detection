@@ -129,6 +129,8 @@ def create_training_dataloaders(
     normalization_stats: dict,
     config: dict,
 ):
+    train_augmentation = config["data"].get("augmentation", False)
+    augmentation_config = config["data"].get("augmentation_config", {})
     return create_dataloaders(
         train_tiles,
         val_tiles,
@@ -144,6 +146,8 @@ def create_training_dataloaders(
         use_rgb=resolved.use_rgb,
         use_dem=resolved.use_dem,
         use_slope=resolved.use_slope,
+        train_augmentation=train_augmentation,
+        augmentation_config=augmentation_config,
     )
 
 

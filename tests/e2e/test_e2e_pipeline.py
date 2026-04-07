@@ -26,6 +26,7 @@ def _run_script(project_root: Path, script: str, *args, timeout: int = 600):
         capture_output=True,
         text=True,
         timeout=timeout,
+        stdin=subprocess.DEVNULL,
     )
 
 

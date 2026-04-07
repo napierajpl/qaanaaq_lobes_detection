@@ -191,6 +191,26 @@ def _update_early_stopping(
     return False
 
 
+def _check_overfit_gap(
+    train_loss: float, val_loss: float,
+    max_gap_ratio: Optional[float], epoch: int,
+    min_epoch: int = 5,
+) -> bool:
+    if max_gap_ratio is None or max_gap_ratio <= 0:
+        return False
+    if epoch < min_epoch or train_loss <= 0:
+        return False
+    gap_ratio = (val_loss - train_loss) / train_loss
+    if gap_ratio > max_gap_ratio:
+        logger.info(
+            "OVERFIT STOP: train-val gap %.0f%% exceeds %.0f%% threshold. "
+            "epoch=%s train_loss=%.6f val_loss=%.6f",
+            gap_ratio * 100, max_gap_ratio * 100, epoch, train_loss, val_loss,
+        )
+        return True
+    return False
+
+
 def _track_best_tiles(tracker: _EpochTracker, val_result: ValidationResult) -> None:
     if val_result.best_tile is not None:
         tile_info, tile_loss = val_result.best_tile
@@ -304,6 +324,10 @@ def _log_epoch_summary(
     if patience:
         summary += " early_stop=%s/%s"
         args.extend([tracker.early_stopping_counter, patience])
+    if train_metrics["train_loss"] > 0:
+        gap_pct = (val_metrics["val_loss"] - train_metrics["train_loss"]) / train_metrics["train_loss"] * 100
+        summary += " overfit_gap=%.0f%%"
+        args.append(gap_pct)
     if "val_baseline_mae" in val_metrics:
         baseline = float(val_metrics["val_baseline_mae"])
         improvement = float(val_metrics["val_improvement_over_baseline"])
@@ -402,6 +426,7 @@ def run_training_loop(
     )
     num_epochs = config["training"]["num_epochs"]
     unfreeze_after_epoch = config["model"].get("encoder", {}).get("unfreeze_after_epoch", 0)
+    max_overfit_gap_ratio = config["training"].get("max_overfit_gap_ratio")
 
     if resume_state:
         tracker = _EpochTracker.from_resume_state(resume_state)
@@ -451,6 +476,11 @@ def run_training_loop(
         should_stop = _update_early_stopping(
             tracker, val_metrics["val_loss"], cfg.early_stopping_patience, cfg.early_stopping_min_delta, epoch,
         )
+        if not should_stop:
+            should_stop = _check_overfit_gap(
+                train_metrics["train_loss"], val_metrics["val_loss"],
+                max_overfit_gap_ratio, epoch,
+            )
 
         log_metrics({**train_metrics, **val_metrics}, step=epoch)
 

@@ -1,0 +1,35 @@
+# Experiment 4: Unfreeze pretrained encoder after warmup
+# Hypothesis: Fine-tuning encoder features on our domain improves segmentation.
+# Change from baseline: freeze_encoder=true initially, unfreeze after epoch 10
+experiment_name: "exp_04_unfreeze_encoder"
+run_intention: "vs baseline: unfreeze encoder @ep10"
+mode: "production"
+
+target_mode: "binary"
+
+training:
+  loss_function: "bce"
+  learning_rate: 0.00002
+  batch_size: 16
+  num_epochs: 150
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0
+  lr_scheduler_patience: 6
+  lr_scheduler_factor: 0.5
+  max_grad_norm: 1.0
+  max_overfit_gap_ratio: 0.6
+
+model:
+  encoder:
+    freeze_encoder: true
+  unfreeze_after_epoch: 10
+
+data:
+  tile_size: 512
+  train_subsample_ratio: 1.0
+  illumination_filter: "sun"
+  augmentation: false
+  use_rgb: true
+  use_dem: false
+  use_slope: false
+  use_segmentation_layer: true

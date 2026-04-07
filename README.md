@@ -136,8 +136,8 @@ Imagery can mix **sunlit** and **shadowed** areas; the same terrain looks differ
 
 Use a **hand-drawn shadow mask**: polygons = shadow, everything outside = sun. Tiles are classified by **area fraction** of the tile covered by shadow:
 
-- **shadow**: ≥70% of tile in shadow polygons  
-- **sun**: ≤30% in shadow (i.e. ≥70% sun)  
+- **shadow**: ≥70% of tile in shadow polygons
+- **sun**: ≤30% in shadow (i.e. ≥70% sun)
 - **mixed**: between 30% and 70% (configurable threshold)
 
 Run after you have `tile_registry.json` (and optionally `filtered_tiles.json`):
@@ -150,7 +150,7 @@ poetry run python scripts/classify_tiles_by_shadow_mask.py
 - **CLI**: `--shadow-mask PATH`, `--mixed-threshold 0.3`, `--registry`, `--filtered-tiles`, `--qgis-layer`, `--dry-run`.
 - Updates `**illumination`** (and empty `**illumination_metrics**`) in **tile_registry.json** and **filtered_tiles.json**; writes **illumination_tiles.geojson** + **.qml** for QGIS (shadow / sun / mixed styling).
 
-**Legacy: add_illumination_tags.py**  
+**Legacy: add_illumination_tags.py**
 Alternative: centroid point-in-polygon from a vector with an attribute, or automatic tagging from RGB (HSV). See config `illumination.illumination_vector` and `illumination.shadow_example_ids` / `sun_example_ids`. Values there are sun / shadow / ambiguous; the recommended pipeline uses **classify_tiles_by_shadow_mask.py** and sun / shadow / mixed.
 
 **2. Train only on sun or shadow**
@@ -320,6 +320,35 @@ Uses a 1024×1024 cropped area and 36 tiles for quick checks.
    poetry run python scripts/train_model.py --dev
   ```
    Optional: `--max-epochs 1` for a single-epoch dry run.
+
+### Experiment sequences
+
+Run structured experiments where each YAML file in `configs/experiments/` contains **overrides** applied on top of `training_config.yaml`. Each experiment includes a `run_intention` (logged to MLflow automatically, skipping the interactive prompt) and an `experiment_name` (used as the MLflow run name).
+
+```bash
+# Run a single experiment:
+poetry run python scripts/run_experiment_sequence.py --experiments exp_00_baseline.yaml
+
+# Run a batch (sequentially):
+poetry run python scripts/run_experiment_sequence.py --experiments exp_00_baseline.yaml exp_01_augmentation.yaml
+
+# Run all exp_*.yaml files:
+poetry run python scripts/run_experiment_sequence.py --all
+```
+
+Compare results after runs complete:
+
+```bash
+poetry run python scripts/compare_experiments.py --prefix exp_
+# or specific runs:
+poetry run python scripts/compare_experiments.py --runs exp_00_baseline exp_01_augmentation
+```
+
+Key config options available in experiment overrides:
+- `data.augmentation: true` — enable geometric (flips, 90° rotations) and color (contrast, saturation, brightness, noise) augmentation on all training tiles
+- `data.augmentation_config` — fine-tune augmentation parameters (contrast_range, saturation_range, brightness_range, noise_std)
+- `training.bce_pos_weight: N` — upweight positive (lobe) class in BCE loss
+- `training.max_overfit_gap_ratio: 0.6` — stop training when train-val gap exceeds 60% (overfitting detector)
 
 ### Warm start (resume)
 

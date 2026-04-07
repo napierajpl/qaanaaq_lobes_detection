@@ -1,0 +1,30 @@
+# Experiment 2: Include shadow tiles (train on all illumination conditions)
+# Hypothesis: More data (sun + shadow) helps despite quality variance.
+# Change from baseline: illumination_filter = "all" instead of "sun"
+experiment_name: "exp_02_all_tiles"
+run_intention: "vs baseline: +shadow tiles (all illum)"
+mode: "production"
+
+target_mode: "binary"
+
+training:
+  loss_function: "bce"
+  learning_rate: 0.00002
+  batch_size: 16
+  num_epochs: 150
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0
+  lr_scheduler_patience: 6
+  lr_scheduler_factor: 0.5
+  max_grad_norm: 1.0
+  max_overfit_gap_ratio: 0.6
+
+data:
+  tile_size: 512
+  train_subsample_ratio: 1.0
+  illumination_filter: "all"
+  augmentation: false
+  use_rgb: true
+  use_dem: false
+  use_slope: false
+  use_segmentation_layer: true

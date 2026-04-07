@@ -89,6 +89,7 @@ def train_model_with_config(
     filtered_tiles_override: Optional[Path] = None,
     resume_from: Optional[Path] = None,
     config_path: Optional[Path] = None,
+    run_intention: Optional[str] = None,
 ) -> float:
     """
     Train model with given configuration.
@@ -211,11 +212,20 @@ def train_model_with_config(
             config, len(train_tiles), len(val_tiles),
             early_stopping_patience, early_stopping_min_delta,
         )
-        loss_plot_options["run_intention"] = prompt_run_intention(trial)
+        if run_intention is not None:
+            loss_plot_options["run_intention"] = run_intention
+            active = mlflow.active_run()
+            if active is not None:
+                mlflow.set_tag("run_intention", run_intention)
+        else:
+            loss_plot_options["run_intention"] = prompt_run_intention(trial)
 
         logger.info("=== Starting Training ===")
         logger.info("IoU threshold: %s", iou_threshold)
         create_initial_loss_placeholder()
+
+        _train_aug = config["data"].get("augmentation", False)
+        _aug_cfg = config["data"].get("augmentation_config", {})
 
         def _make_loaders(tr, val):
             return create_dataloaders(
@@ -224,6 +234,7 @@ def train_model_with_config(
                 tile_size=tile_size, target_mode=target_mode, binary_threshold=binary_threshold,
                 segmentation_base_dir=segmentation_dir, slope_stripes_base_dir=slope_stripes_channel_dir,
                 use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
+                train_augmentation=_train_aug, augmentation_config=_aug_cfg,
             )
 
         training_start_time = time.time()

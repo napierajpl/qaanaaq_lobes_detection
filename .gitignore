@@ -49,8 +49,8 @@ htmlcov/
 *.qml
 
 # MLflow
-mlruns/
-mlartifacts/
+# mlruns/
+# mlartifacts/
 
 # Optuna (legacy output folder; results now go under data/)
 optuna_results/

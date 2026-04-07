@@ -179,17 +179,65 @@ def _apply_lobe_augmentation(
     contrast_range: Tuple[float, float] = (0.8, 1.2),
     saturation_range: Tuple[float, float] = (0.8, 1.2),
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Apply random rotation (0/90/180/270) and random contrast/saturation to RGB only."""
+    """Legacy augmentation for tile_info['augment'] == True (background-extended copies only)."""
+    features, target = _apply_geometric_augmentation(features, target)
+    features = _apply_color_augmentation(features, contrast_range, saturation_range)
+    return features, target
+
+
+def _apply_geometric_augmentation(
+    features: torch.Tensor,
+    target: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Random 90-degree rotation + random horizontal/vertical flip. Label-preserving for geospatial."""
     k = random.randint(0, 3)
     features = torch.rot90(features, k, dims=[1, 2])
     target = torch.rot90(target, k, dims=[1, 2])
-    c = random.uniform(*contrast_range)
-    s = random.uniform(*saturation_range)
-    rgb = features[0:3].clone()
-    rgb = adjust_contrast(rgb, c)
-    rgb = adjust_saturation(rgb, s)
+    if random.random() > 0.5:
+        features = torch.flip(features, dims=[2])
+        target = torch.flip(target, dims=[2])
+    if random.random() > 0.5:
+        features = torch.flip(features, dims=[1])
+        target = torch.flip(target, dims=[1])
+    return features, target
+
+
+def _apply_color_augmentation(
+    features: torch.Tensor,
+    contrast_range: Tuple[float, float] = (0.8, 1.2),
+    saturation_range: Tuple[float, float] = (0.8, 1.2),
+    brightness_range: Tuple[float, float] = (-0.05, 0.05),
+    noise_std: float = 0.02,
+) -> torch.Tensor:
+    """Random contrast, saturation, brightness, and Gaussian noise on RGB channels only."""
+    if features.shape[0] < 3:
+        return features
     features = features.clone()
-    features[0:3] = rgb
+    rgb = features[0:3]
+    rgb = adjust_contrast(rgb, random.uniform(*contrast_range))
+    rgb = adjust_saturation(rgb, random.uniform(*saturation_range))
+    rgb = rgb + random.uniform(*brightness_range)
+    rgb = rgb + torch.randn_like(rgb) * noise_std
+    features[0:3] = torch.clamp(rgb, 0.0, 1.0)
+    return features
+
+
+def _apply_train_augmentation(
+    features: torch.Tensor,
+    target: torch.Tensor,
+    augmentation_config: dict,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Full augmentation pipeline for all training tiles (when augmentation is enabled)."""
+    if augmentation_config.get("geometric", True):
+        features, target = _apply_geometric_augmentation(features, target)
+    if augmentation_config.get("color", True):
+        features = _apply_color_augmentation(
+            features,
+            contrast_range=tuple(augmentation_config.get("contrast_range", (0.8, 1.2))),
+            saturation_range=tuple(augmentation_config.get("saturation_range", (0.8, 1.2))),
+            brightness_range=tuple(augmentation_config.get("brightness_range", (-0.05, 0.05))),
+            noise_std=augmentation_config.get("noise_std", 0.02),
+        )
     return features, target
 
 
@@ -231,6 +279,7 @@ class TileDataset(Dataset):
         use_rgb: bool = True,
         use_dem: bool = True,
         use_slope: bool = True,
+        train_augmentation: bool = False,
     ):
         self.tile_list = tile_list
         self.features_base_dir = Path(features_base_dir)
@@ -245,6 +294,7 @@ class TileDataset(Dataset):
         self.use_rgb = use_rgb
         self.use_dem = use_dem
         self.use_slope = use_slope
+        self.train_augmentation = train_augmentation
 
     def __len__(self) -> int:
         return len(self.tile_list)
@@ -320,10 +370,13 @@ class TileDataset(Dataset):
         if self.target_mode == "binary":
             target_tensor = (target_tensor >= self.binary_threshold).float()
 
-        if tile_info.get("augment"):
+        if self.train_augmentation:
+            features_tensor, target_tensor = _apply_train_augmentation(
+                features_tensor, target_tensor, self.augmentation_config,
+            )
+        elif tile_info.get("augment"):
             features_tensor, target_tensor = _apply_lobe_augmentation(
-                features_tensor,
-                target_tensor,
+                features_tensor, target_tensor,
                 contrast_range=tuple(self.augmentation_config.get("contrast_range", (0.8, 1.2))),
                 saturation_range=tuple(self.augmentation_config.get("saturation_range", (0.8, 1.2))),
             )
@@ -428,6 +481,7 @@ def create_dataloaders(
     use_rgb: bool = True,
     use_dem: bool = True,
     use_slope: bool = True,
+    train_augmentation: bool = False,
 ) -> Tuple[DataLoader, DataLoader]:
     train_dataset = TileDataset(
         train_tiles,
@@ -443,6 +497,7 @@ def create_dataloaders(
         use_rgb=use_rgb,
         use_dem=use_dem,
         use_slope=use_slope,
+        train_augmentation=train_augmentation,
     )
 
     val_dataset = TileDataset(

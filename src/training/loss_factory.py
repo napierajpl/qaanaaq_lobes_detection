@@ -97,9 +97,15 @@ def _create_acl(config: Dict[str, Any]) -> nn.Module:
 
 
 def _create_bce(config: Dict[str, Any]) -> nn.Module:
+    import torch
     from src.models.losses import BCEWithLabelSmoothing
     smoothing = config.get("bce_label_smoothing") or 0.0
     smoothing = float(smoothing)
+    pos_weight = config.get("bce_pos_weight")
+    if pos_weight is not None:
+        pw = torch.tensor([float(pos_weight)])
+        logger.info("BCE with pos_weight=%.2f", float(pos_weight))
+        return nn.BCEWithLogitsLoss(pos_weight=pw)
     if smoothing <= 0:
         return nn.BCELoss()
     return BCEWithLabelSmoothing(smoothing=smoothing)
