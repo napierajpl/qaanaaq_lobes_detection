@@ -94,6 +94,17 @@ TRAIN_MODEL_ARG_SPECS: List[dict] = [
         "metavar": "PATH",
         "help": "Resume training from a full checkpoint (training_latest.pt or best_model.pt with training_loop_state).",
     },
+    {
+        "option": "--init-weights",
+        "type": Path,
+        "default": None,
+        "metavar": "PATH",
+        "help": (
+            "Initialize model weights from a checkpoint (best_model.pt or training_latest.pt) "
+            "but start a fresh training loop (new optimizer, epoch 1, reset early stopping). "
+            "Use to fine-tune from a previous run with different settings."
+        ),
+    },
 ]
 
 

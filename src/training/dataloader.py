@@ -11,7 +11,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 import rasterio
-from torchvision.transforms.functional import adjust_contrast, adjust_saturation
+from torchvision.transforms.functional import (
+    adjust_contrast,
+    adjust_gamma,
+    adjust_hue,
+    adjust_saturation,
+)
 
 from src.preprocessing.normalization import (
     normalize_rgb,
@@ -173,15 +178,29 @@ def get_background_train_ids_from_extended_tiles(tiles: List[dict]) -> Set[str]:
     return {t["tile_id"] for t in tiles if t.get("role") == "background"}
 
 
+def _color_params_from_config(augmentation_config: dict) -> dict:
+    """Defaults favor stronger photometric diversity on RGB; non-RGB channels never pass through this."""
+    return {
+        "contrast_range": tuple(augmentation_config.get("contrast_range", (0.72, 1.28))),
+        "saturation_range": tuple(augmentation_config.get("saturation_range", (0.72, 1.28))),
+        "brightness_range": tuple(augmentation_config.get("brightness_range", (-0.12, 0.12))),
+        "noise_std": float(augmentation_config.get("noise_std", 0.03)),
+        "use_gamma": bool(augmentation_config.get("gamma", True)),
+        "gamma_range": tuple(augmentation_config.get("gamma_range", (0.78, 1.22))),
+        "use_hue": bool(augmentation_config.get("hue", True)),
+        "hue_range": tuple(augmentation_config.get("hue_range", (-0.04, 0.04))),
+    }
+
+
 def _apply_lobe_augmentation(
     features: torch.Tensor,
     target: torch.Tensor,
-    contrast_range: Tuple[float, float] = (0.8, 1.2),
-    saturation_range: Tuple[float, float] = (0.8, 1.2),
+    augmentation_config: dict,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Legacy augmentation for tile_info['augment'] == True (background-extended copies only)."""
     features, target = _apply_geometric_augmentation(features, target)
-    features = _apply_color_augmentation(features, contrast_range, saturation_range)
+    color_kw = _color_params_from_config(augmentation_config)
+    features = _apply_color_augmentation(features, **color_kw)
     return features, target
 
 
@@ -204,18 +223,26 @@ def _apply_geometric_augmentation(
 
 def _apply_color_augmentation(
     features: torch.Tensor,
-    contrast_range: Tuple[float, float] = (0.8, 1.2),
-    saturation_range: Tuple[float, float] = (0.8, 1.2),
-    brightness_range: Tuple[float, float] = (-0.05, 0.05),
-    noise_std: float = 0.02,
+    contrast_range: Tuple[float, float] = (0.72, 1.28),
+    saturation_range: Tuple[float, float] = (0.72, 1.28),
+    brightness_range: Tuple[float, float] = (-0.12, 0.12),
+    noise_std: float = 0.03,
+    use_gamma: bool = True,
+    gamma_range: Tuple[float, float] = (0.78, 1.22),
+    use_hue: bool = True,
+    hue_range: Tuple[float, float] = (-0.04, 0.04),
 ) -> torch.Tensor:
-    """Random contrast, saturation, brightness, and Gaussian noise on RGB channels only."""
+    """Random hue, saturation, contrast, gamma, brightness, and noise on RGB channels only."""
     if features.shape[0] < 3:
         return features
     features = features.clone()
     rgb = features[0:3]
-    rgb = adjust_contrast(rgb, random.uniform(*contrast_range))
+    if use_hue:
+        rgb = adjust_hue(rgb, random.uniform(*hue_range))
     rgb = adjust_saturation(rgb, random.uniform(*saturation_range))
+    rgb = adjust_contrast(rgb, random.uniform(*contrast_range))
+    if use_gamma:
+        rgb = adjust_gamma(rgb, random.uniform(*gamma_range))
     rgb = rgb + random.uniform(*brightness_range)
     rgb = rgb + torch.randn_like(rgb) * noise_std
     features[0:3] = torch.clamp(rgb, 0.0, 1.0)
@@ -231,13 +258,8 @@ def _apply_train_augmentation(
     if augmentation_config.get("geometric", True):
         features, target = _apply_geometric_augmentation(features, target)
     if augmentation_config.get("color", True):
-        features = _apply_color_augmentation(
-            features,
-            contrast_range=tuple(augmentation_config.get("contrast_range", (0.8, 1.2))),
-            saturation_range=tuple(augmentation_config.get("saturation_range", (0.8, 1.2))),
-            brightness_range=tuple(augmentation_config.get("brightness_range", (-0.05, 0.05))),
-            noise_std=augmentation_config.get("noise_std", 0.02),
-        )
+        color_kw = _color_params_from_config(augmentation_config)
+        features = _apply_color_augmentation(features, **color_kw)
     return features, target
 
 
@@ -376,9 +398,7 @@ class TileDataset(Dataset):
             )
         elif tile_info.get("augment"):
             features_tensor, target_tensor = _apply_lobe_augmentation(
-                features_tensor, target_tensor,
-                contrast_range=tuple(self.augmentation_config.get("contrast_range", (0.8, 1.2))),
-                saturation_range=tuple(self.augmentation_config.get("saturation_range", (0.8, 1.2))),
+                features_tensor, target_tensor, self.augmentation_config,
             )
 
         return features_tensor, target_tensor
@@ -515,20 +535,24 @@ def create_dataloaders(
         use_slope=use_slope,
     )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
+    pin = torch.cuda.is_available()
+    train_kw: dict = {
+        "batch_size": batch_size,
+        "shuffle": True,
+        "num_workers": num_workers,
+        "pin_memory": pin,
+    }
+    val_kw: dict = {
+        "batch_size": batch_size,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "pin_memory": pin,
+    }
+    if num_workers > 0:
+        train_kw["persistent_workers"] = True
+        val_kw["persistent_workers"] = True
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
+    train_loader = DataLoader(train_dataset, **train_kw)
+    val_loader = DataLoader(val_dataset, **val_kw)
 
     return train_loader, val_loader

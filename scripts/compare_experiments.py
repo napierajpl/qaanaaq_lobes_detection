@@ -7,7 +7,7 @@ of experiments matching a name pattern.
 
 Usage:
     poetry run python scripts/compare_experiments.py --prefix exp_
-    poetry run python scripts/compare_experiments.py --runs exp_00_baseline exp_01_augmentation
+    poetry run python scripts/compare_experiments.py --runs exp_02_augmentation exp_03_bce_pos_weight
 """
 
 import argparse

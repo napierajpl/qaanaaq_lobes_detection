@@ -17,6 +17,7 @@ from src.models.losses import (
     FocalLoss,
     CombinedLoss,
     ACLLoss,
+    BCELossWithPosWeight,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,15 +98,21 @@ def _create_acl(config: Dict[str, Any]) -> nn.Module:
 
 
 def _create_bce(config: Dict[str, Any]) -> nn.Module:
-    import torch
     from src.models.losses import BCEWithLabelSmoothing
+
     smoothing = config.get("bce_label_smoothing") or 0.0
     smoothing = float(smoothing)
     pos_weight = config.get("bce_pos_weight")
     if pos_weight is not None:
-        pw = torch.tensor([float(pos_weight)])
-        logger.info("BCE with pos_weight=%.2f", float(pos_weight))
-        return nn.BCEWithLogitsLoss(pos_weight=pw)
+        if smoothing > 0:
+            raise ValueError(
+                "Use either bce_pos_weight or bce_label_smoothing, not both."
+            )
+        logger.info(
+            "BCE with pos_weight=%.2f (probabilities; binary head uses sigmoid)",
+            float(pos_weight),
+        )
+        return BCELossWithPosWeight(pos_weight=float(pos_weight))
     if smoothing <= 0:
         return nn.BCELoss()
     return BCEWithLabelSmoothing(smoothing=smoothing)
@@ -198,6 +205,8 @@ def _criterion_description(name: str, config: Dict[str, Any]) -> str:
             f"focal_alpha={config.get('focal_alpha', 0.75)}, focal_gamma={config.get('focal_gamma', 2.0)})"
         )
     if name == "bce":
+        if config.get("bce_pos_weight") is not None:
+            return f"BCELossWithPosWeight(pos_weight={config.get('bce_pos_weight')})"
         smooth = config.get("bce_label_smoothing") or 0.0
         if float(smooth) > 0:
             return f"BCEWithLabelSmoothing(smoothing={smooth})"

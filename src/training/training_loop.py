@@ -17,7 +17,13 @@ from torch.utils.data import DataLoader
 logger = logging.getLogger(__name__)
 
 from src.training.trainer import train_one_epoch, validate, save_training_checkpoint, ValidationResult
-from src.training.visualization import plot_loss_simple, show_best_predicted_tile, show_highest_iou_tile
+from src.training.visualization import (
+    plot_loss_simple,
+    show_best_predicted_tile,
+    show_highest_iou_tile,
+    create_prediction_tile_figures,
+    create_representative_tiles_channel_figures,
+)
 from src.training.warm_start import (
     TRAINING_LATEST_NAME,
     WARM_START_MANIFEST_NAME,
@@ -67,6 +73,8 @@ class TrainingLoopConfig:
     config_path: Optional[Path] = None
     mode: str = "production"
     config_snapshot: Optional[dict] = None
+    representative_tiles: List[dict] = field(default_factory=list)
+    viz_interval_seconds: float = 3600.0
 
 
 @dataclass
@@ -88,6 +96,7 @@ class _EpochTracker:
     last_drawn_best_tile_loss: Optional[float] = None
     last_drawn_best_iou_tile_id: Optional[str] = None
     last_drawn_best_iou: Optional[float] = None
+    last_representative_tiles_time: Optional[float] = None
     metrics_history: Dict[str, List] = field(default_factory=lambda: {
         "epochs": [], "train_loss": [], "val_loss": [],
         "val_mae": [], "val_iou": [], "learning_rate": [],
@@ -309,6 +318,54 @@ def _log_best_tile_figures(tracker: _EpochTracker, model: nn.Module, cfg: Traini
             tracker.last_drawn_best_iou = tracker.best_iou_so_far
 
 
+def _maybe_log_representative_tiles(
+    tracker: _EpochTracker, model: nn.Module, cfg: TrainingLoopConfig,
+    epoch: int,
+) -> None:
+    if not cfg.representative_tiles:
+        return
+    now = time.time()
+    if tracker.last_representative_tiles_time is not None:
+        elapsed = now - tracker.last_representative_tiles_time
+        if elapsed < cfg.viz_interval_seconds:
+            return
+    import mlflow
+    import matplotlib.pyplot as plt
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Generating representative tile figures (epoch %s)...", epoch)
+    pred_figures = create_prediction_tile_figures(
+        model, cfg.representative_tiles,
+        cfg.features_dir, cfg.targets_dir, cfg.normalization_stats, device,
+        iou_threshold=cfg.iou_threshold, tile_size=cfg.tile_size,
+        target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
+        segmentation_base_dir=cfg.segmentation_dir,
+        slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
+        use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
+    )
+    for tid, fig in pred_figures.items():
+        mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
+        if cfg.loss_plot_path is not None:
+            fig.savefig(cfg.loss_plot_path.parent / f"prediction_{tid}.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    channel_figures = create_representative_tiles_channel_figures(
+        model, cfg.representative_tiles,
+        cfg.features_dir, cfg.targets_dir, cfg.normalization_stats, device,
+        iou_threshold=cfg.iou_threshold, tile_size=cfg.tile_size,
+        target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
+        segmentation_base_dir=cfg.segmentation_dir,
+        slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
+        use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
+    )
+    for tid, fig in channel_figures.items():
+        mlflow.log_figure(fig, f"representative_channels/{tid}.png")
+        if cfg.loss_plot_path is not None:
+            fig.savefig(cfg.loss_plot_path.parent / f"channels_{tid}.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    tracker.last_representative_tiles_time = time.time()
+    logger.info("Representative tiles updated (epoch %s, %d tiles)", epoch, len(cfg.representative_tiles))
+
+
 def _log_epoch_summary(
     tracker: _EpochTracker, train_metrics: dict, val_metrics: dict,
     epoch: int, num_epochs: int, patience: Optional[int],
@@ -407,6 +464,8 @@ def run_training_loop(
     config_path: Optional[Path] = None,
     mode: str = "production",
     config_snapshot: Optional[dict] = None,
+    representative_tiles: Optional[List[dict]] = None,
+    viz_interval_seconds: float = 3600.0,
 ) -> TrainingLoopResult:
     import mlflow
     import matplotlib.pyplot as plt
@@ -423,6 +482,8 @@ def run_training_loop(
         run_name=run_name, train_subsample_ratio=train_subsample_ratio,
         models_dir=models_dir, project_root=project_root,
         config_path=config_path, mode=mode, config_snapshot=config_snapshot,
+        representative_tiles=representative_tiles or [],
+        viz_interval_seconds=viz_interval_seconds,
     )
     num_epochs = config["training"]["num_epochs"]
     unfreeze_after_epoch = config["model"].get("encoder", {}).get("unfreeze_after_epoch", 0)
@@ -490,6 +551,8 @@ def run_training_loop(
         _save_best_model_and_viz(tracker, model, optimizer, lr_scheduler, val_metrics, epoch, cfg, trial)
         _log_epoch_summary(tracker, train_metrics, val_metrics, epoch, num_epochs, cfg.early_stopping_patience)
         _log_loss_plot(tracker, cfg, mlflow, plt)
+        if trial is None:
+            _maybe_log_representative_tiles(tracker, model, cfg, epoch)
         _save_latest_checkpoint(tracker, model, optimizer, lr_scheduler, val_metrics, epoch, cfg, num_epochs)
 
         if should_stop:

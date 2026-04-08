@@ -1,15 +1,14 @@
-# Experiment 2: Include shadow tiles (train on all illumination conditions)
-# Hypothesis: More data (sun + shadow) helps despite quality variance.
-# Change from baseline: illumination_filter = "all" instead of "sun"
-experiment_name: "exp_02_all_tiles"
-run_intention: "vs baseline: +shadow tiles (all illum)"
+# Experiment 2: Augmentation on sun-only tiles (flips, rotations, color jitter)
+# Hypothesis: Augmentation reduces overfitting vs exp_01.
+experiment_name: "exp_02_augmentation"
+run_intention: "vs exp01: +augment (flip/rot/color)"
 mode: "production"
 
 target_mode: "binary"
 
 training:
   loss_function: "bce"
-  learning_rate: 0.00002
+  learning_rate: 0.00003
   batch_size: 16
   num_epochs: 150
   early_stopping_patience: 15
@@ -22,8 +21,8 @@ training:
 data:
   tile_size: 512
   train_subsample_ratio: 1.0
-  illumination_filter: "all"
-  augmentation: false
+  illumination_filter: "sun"
+  augmentation: true
   use_rgb: true
   use_dem: false
   use_slope: false

@@ -6,6 +6,22 @@ import torch
 import torch.nn as nn
 
 
+class BCELossWithPosWeight(nn.Module):
+    """BCE for probability predictions in [0, 1] with extra weight on positive (lobe) pixels."""
+
+    def __init__(self, pos_weight: float):
+        super().__init__()
+        self.pos_weight = float(pos_weight)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        eps = 1e-7
+        p = pred.clamp(eps, 1.0 - eps)
+        t = target
+        bce = -(t * torch.log(p) + (1.0 - t) * torch.log(1.0 - p))
+        w = torch.where(t >= 0.5, self.pos_weight, 1.0)
+        return (bce * w).mean()
+
+
 class BCEWithLabelSmoothing(nn.Module):
     """BCE with optional label smoothing to reduce overfitting to hard 0/1 targets."""
 

@@ -43,7 +43,7 @@ The **relevant signal** for lobe/stripe detection is the **combination**: high o
 
 ## 2. Current Codebase
 
-- **Segmentation flow:**  
+- **Segmentation flow:**
   `create_segmentation_layer.py` → whole raster (block processing) → output GeoTIFF → **tile** via `create_tiles.py` → dataloader loads 6th channel from `segmentation_dir` by `tile_id`.
 - **Features:** VRT = RGB + DEM + Slope (5 bands); tiles in `features/`; optional 6th channel from `segmentation_dir`.
 - **Texture hints:** `src/preprocessing/texture_hints.py` has:

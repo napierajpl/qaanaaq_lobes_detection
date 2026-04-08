@@ -70,7 +70,7 @@ def load_best_checkpoint(
 ) -> None:
     if not best_model_path.exists():
         return
-    checkpoint = torch.load(best_model_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     logger.info("Loaded best checkpoint for plots and MLflow")
 

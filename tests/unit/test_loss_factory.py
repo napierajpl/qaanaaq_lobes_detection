@@ -49,6 +49,19 @@ class TestCreateCriterionSupported:
         criterion = create_criterion(config)
         assert isinstance(criterion, BCEWithLabelSmoothing)
 
+    def test_bce_with_pos_weight(self):
+        from src.models.losses import BCELossWithPosWeight
+
+        config = {"loss_function": "bce", "bce_pos_weight": 5.0}
+        criterion = create_criterion(config)
+        assert isinstance(criterion, BCELossWithPosWeight)
+        pred = torch.full((2, 1, 4, 4), 0.5)
+        target = torch.zeros((2, 1, 4, 4))
+        target[:, :, :2, :] = 1.0
+        loss = criterion(pred, target)
+        assert loss.dim() == 0
+        assert loss.item() >= 0.0
+
 
 class TestCreateCriterionUnknown:
     def test_unknown_loss_raises(self):

@@ -16,6 +16,14 @@ CNN pipeline for detecting **solifluction lobes** from high-resolution aerial im
 
 *Detailed map of northern Greenland showing where Qaanaaq is.*
 
+## Current best prediction
+
+![Best IoU tile — current model prediction](docs/readme_assets/current_best_prediction.png)
+
+*Best single-tile prediction (tile_4998, IoU 0.54). Model: SatlasPretrain ResNet50 encoder + U-Net decoder with SE and PPM, 5 input channels (RGB + segmentation + slope-stripes), BCE loss with pos_weight=5, binary target mode. Trained on 403 sun-only 512x512 tiles with augmentation (geometric + color/gamma/hue), train_subsample_ratio=0.8, lr=1.5e-5, weight_decay=0.002. Encoder unfreezing and other regularization strategies are being explored to push past the current ceiling.*
+
+---
+
 ## Setup
 
 **Poetry (recommended)**
@@ -277,6 +285,7 @@ Runs 30 trials with dev tiles and pruning (~8 h order of magnitude). Edit the sc
   - `--best-hparams-path PATH` – path to best-hparams YAML when using `--best-hparams` (default: `configs/best_hyperparameters.yaml`)
   - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
   - `--resume PATH` – continue training from a full checkpoint (`training_latest.pt` or a new-format `best_model.pt` with optimizer, scheduler, and metrics history); see [Warm start (resume)](#warm-start-resume)
+  - `--init-weights PATH` – initialize model weights from a previous checkpoint but start a fresh training loop (new optimizer, epoch 1, reset early stopping). Use to fine-tune with different settings (e.g. new loss, pos_weight, unfrozen encoder) without retraining from scratch. See [Init weights (fine-tune)](#init-weights-fine-tune).
   - `--use-slope-stripes-channel` – enable slope-stripes (Gabor) as an extra input channel; requires `slope_stripes_channel_dir` in paths
   - `--slope-stripes-only` – use **only** the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting `use_rgb`/`use_dem`/`use_slope`/`use_segmentation_layer` to false and `use_slope_stripes_channel` to true in config
    **Input layer toggles** (in `configs/training_config.yaml` under `data`): **use_rgb**, **use_dem**, **use_slope**, **use_segmentation_layer**, **use_slope_stripes_channel**. At least one must be true. Use these to ablate channels (e.g. SlopeStripes-only by setting only `use_slope_stripes_channel: true`).
@@ -327,12 +336,12 @@ Run structured experiments where each YAML file in `configs/experiments/` contai
 
 ```bash
 # Run a single experiment:
-poetry run python scripts/run_experiment_sequence.py --experiments exp_00_baseline.yaml
+poetry run python scripts/run_experiment_sequence.py --experiments exp_01_baseline.yaml
 
 # Run a batch (sequentially):
-poetry run python scripts/run_experiment_sequence.py --experiments exp_00_baseline.yaml exp_01_augmentation.yaml
+poetry run python scripts/run_experiment_sequence.py --experiments exp_01_baseline.yaml exp_02_augmentation.yaml
 
-# Run all exp_*.yaml files:
+# Run all exp_*.yaml files (sorted: exp_00_all_tiles → exp_04_…):
 poetry run python scripts/run_experiment_sequence.py --all
 ```
 
@@ -341,14 +350,16 @@ Compare results after runs complete:
 ```bash
 poetry run python scripts/compare_experiments.py --prefix exp_
 # or specific runs:
-poetry run python scripts/compare_experiments.py --runs exp_00_baseline exp_01_augmentation
+poetry run python scripts/compare_experiments.py --runs exp_02_augmentation exp_03_bce_pos_weight
 ```
 
 Key config options available in experiment overrides:
 - `data.augmentation: true` — enable geometric (flips, 90° rotations) and color (contrast, saturation, brightness, noise) augmentation on all training tiles
 - `data.augmentation_config` — fine-tune augmentation parameters (contrast_range, saturation_range, brightness_range, noise_std)
+- `data.dataloader_num_workers: N` — DataLoader worker processes (default **0**; **>0** can help on Linux/WSL but on **Windows** often makes training *much* slower—keep **0** unless you benchmarked a gain)
 - `training.bce_pos_weight: N` — upweight positive (lobe) class in BCE loss
 - `training.max_overfit_gap_ratio: 0.6` — stop training when train-val gap exceeds 60% (overfitting detector)
+- `init_weights_from: "data/models/production/best_model.pt"` — initialize model from a previous checkpoint (fresh optimizer, epoch 1); see [Init weights (fine-tune)](#init-weights-fine-tune)
 
 ### Warm start (resume)
 
@@ -376,6 +387,34 @@ Resolves the default manifest from `models_dir`, prints a short summary, saves *
 **MLflow:** A resumed run logs tags `resumed_from_checkpoint` and param `resume_last_completed_epoch`.
 
 **Note:** Checkpoints produced **before** this format existed contain weights only (no `training_loop_state`). Run at least one full epoch with the current code to generate compatible files.
+
+### Init weights (fine-tune)
+
+Use `--init-weights` to start a **new** training run with model weights from a previous checkpoint. Unlike `--resume`, this creates a fresh optimizer, resets early stopping, and starts from epoch 1. Use it when you want to change training settings (loss function, learning rate, pos_weight, unfreeze encoder) while keeping the learned features.
+
+```bash
+poetry run python scripts/train_model.py --init-weights data/models/production/best_model.pt
+```
+
+| | `--resume` | `--init-weights` |
+|---|---|---|
+| Model weights | Loaded | Loaded |
+| Optimizer state | Restored | Fresh |
+| LR scheduler | Restored | Fresh |
+| Early stopping | Continues | Reset |
+| Start epoch | last + 1 | 1 |
+
+In experiment YAMLs, use `init_weights_from` (path relative to project root):
+
+```yaml
+experiment_name: exp_05_pos_weight
+run_intention: "from aug best: +pos_weight=5"
+init_weights_from: "data/models/production/best_model.pt"
+training:
+  bce_pos_weight: 5
+```
+
+**MLflow:** Logs tag `init_weights_from` with the checkpoint path for lineage tracking.
 
 ---
 

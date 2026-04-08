@@ -1,15 +1,14 @@
-# Experiment 0: Clean baseline with correct IoU threshold
-# Hypothesis: Establish reference metrics with BCE on sun-only tiles, no augmentation.
-# Expected: ~8-10 min/epoch, ~150 epochs → ~20-25 hours
-experiment_name: "exp_00_baseline"
-run_intention: "Baseline: BCE, sun tiles, no augment"
+# Experiment 0 (priority): Sun + shadow — all illumination conditions
+# Hypothesis: More data helps despite quality variance. Lowest exp number = run first in --all.
+experiment_name: "exp_00_all_tiles"
+run_intention: "all illum: sun+shadow tiles"
 mode: "production"
 
 target_mode: "binary"
 
 training:
   loss_function: "bce"
-  learning_rate: 0.00002
+  learning_rate: 0.00003
   batch_size: 16
   num_epochs: 150
   early_stopping_patience: 15
@@ -22,7 +21,7 @@ training:
 data:
   tile_size: 512
   train_subsample_ratio: 1.0
-  illumination_filter: "sun"
+  illumination_filter: "all"
   augmentation: false
   use_rgb: true
   use_dem: false

@@ -1,4 +1,7 @@
+import random
+
 import pytest
+import torch
 
 from src.training.dataloader import (
     create_data_splits,
@@ -6,6 +9,7 @@ from src.training.dataloader import (
     get_all_tile_ids_from_dirs,
     load_filtered_tiles,
     save_extended_training_tiles,
+    _apply_color_augmentation,
 )
 
 
@@ -18,6 +22,25 @@ def _make_tiles(n):
         }
         for i in range(n)
     ]
+
+
+# ── color augmentation (RGB only) ───────────────────────────────────
+
+
+class TestColorAugmentationRgbOnly:
+    def test_leaves_non_rgb_channels_unchanged(self):
+        random.seed(0)
+        torch.manual_seed(0)
+        features = torch.rand(5, 8, 8)
+        tail = features[3:].clone()
+        out = _apply_color_augmentation(features)
+        assert out.shape == features.shape
+        assert torch.allclose(out[3:], tail)
+        assert (out[0:3] >= 0).all() and (out[0:3] <= 1).all()
+
+    def test_skips_when_fewer_than_three_channels(self):
+        f = torch.rand(2, 4, 4)
+        assert torch.equal(_apply_color_augmentation(f.clone()), f)
 
 
 # ── create_data_splits ──────────────────────────────────────────────

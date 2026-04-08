@@ -57,6 +57,10 @@ from src.training.post_training import (
     run_post_training_visualization,
     save_mlflow_model_if_enabled,
 )
+from src.training.visualization import (
+    get_representative_tile_ids_for_viz,
+    resolve_representative_tiles,
+)
 from src.utils.voice_notify import notify_training_finished
 
 logging.basicConfig(
@@ -90,6 +94,7 @@ def train_model_with_config(
     resume_from: Optional[Path] = None,
     config_path: Optional[Path] = None,
     run_intention: Optional[str] = None,
+    init_weights_from: Optional[Path] = None,
 ) -> float:
     """
     Train model with given configuration.
@@ -151,6 +156,8 @@ def train_model_with_config(
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
     logger.info(f"Using device: {device}")
     components = build_model_and_training_components(
         config, in_channels, target_mode, device
@@ -159,6 +166,9 @@ def train_model_with_config(
     criterion = components.criterion
     optimizer = components.optimizer
     lr_scheduler = components.lr_scheduler
+
+    if resume_from is not None and init_weights_from is not None:
+        raise ValueError("Cannot use both --resume and --init-weights. Pick one.")
 
     resume_loop_state: Optional[dict] = None
     if resume_from is not None:
@@ -182,6 +192,20 @@ def train_model_with_config(
             "Loaded resume checkpoint from %s (last completed epoch %s)",
             ckpt_path,
             resume_loop_state.get("last_completed_epoch"),
+        )
+
+    if init_weights_from is not None:
+        weights_path = resolve_path(init_weights_from, project_root)
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Init-weights checkpoint not found: {weights_path}")
+        ckpt = load_training_checkpoint(weights_path, device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        prev_epoch = ckpt.get("epoch", "?")
+        prev_loss = ckpt.get("metrics", {}).get("val_loss", "?")
+        logger.info(
+            "Loaded model weights from %s (epoch %s, val_loss %s). "
+            "Optimizer, scheduler, and early stopping are fresh.",
+            weights_path, prev_epoch, prev_loss,
         )
     iou_threshold = components.iou_threshold
     early_stopping_patience = components.early_stopping_patience
@@ -226,11 +250,13 @@ def train_model_with_config(
 
         _train_aug = config["data"].get("augmentation", False)
         _aug_cfg = config["data"].get("augmentation_config", {})
+        _num_workers = int(config["data"].get("dataloader_num_workers", 0))
 
         def _make_loaders(tr, val):
             return create_dataloaders(
                 tr, val, features_dir, targets_dir, normalization_stats,
                 batch_size=config["training"]["batch_size"],
+                num_workers=_num_workers,
                 tile_size=tile_size, target_mode=target_mode, binary_threshold=binary_threshold,
                 segmentation_base_dir=segmentation_dir, slope_stripes_base_dir=slope_stripes_channel_dir,
                 use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
@@ -245,7 +271,17 @@ def train_model_with_config(
                 "resume_last_completed_epoch",
                 int(resume_loop_state.get("last_completed_epoch", 0)),
             )
+        if init_weights_from is not None:
+            mlflow.set_tag("init_weights_from", str(init_weights_from))
         config_snapshot = copy.deepcopy(config)
+        viz_config = config.get("visualization", {})
+        rep_tile_ids = get_representative_tile_ids_for_viz(viz_config, path_key, tile_size)
+        rep_tiles = resolve_representative_tiles(all_tiles, rep_tile_ids) if rep_tile_ids else []
+        fallback_n = int(viz_config.get("prediction_tiles_fallback_n", 0))
+        if not rep_tiles and fallback_n > 0 and all_tiles:
+            rep_tiles = all_tiles[:fallback_n]
+        viz_interval = float(viz_config.get("viz_interval_seconds", 3600))
+
         result = run_training_loop(
             config, model, criterion, optimizer, lr_scheduler, device,
             train_tiles, val_tiles, train_loader, val_loader, _make_loaders,
@@ -259,6 +295,8 @@ def train_model_with_config(
             config_path=config_path,
             mode=mode,
             config_snapshot=config_snapshot,
+            representative_tiles=rep_tiles,
+            viz_interval_seconds=viz_interval,
         )
         best_val_loss = result.best_val_loss
         best_val_mae = result.best_val_mae
@@ -352,17 +390,20 @@ def main():
 
     resume_from = getattr(args, "resume", None)
     resume_path = resolve_path(resume_from, project_root) if resume_from else None
+    init_weights = getattr(args, "init_weights", None)
+    init_weights_path = resolve_path(init_weights, project_root) if init_weights else None
 
     train_model_with_config(
         config=config,
         mode=mode,
-        trial=None,  # Not using Optuna
+        trial=None,
         run_name=args.run_name,
         applied_best_hparams=applied_best_hparams,
         max_tiles=args.max_tiles,
         filtered_tiles_override=args.filtered_tiles,
         resume_from=resume_path,
         config_path=config_path,
+        init_weights_from=init_weights_path,
     )
 
 

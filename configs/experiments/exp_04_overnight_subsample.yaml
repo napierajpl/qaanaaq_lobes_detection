@@ -1,7 +1,7 @@
-# Experiment 4: Unfreeze encoder @ epoch 10 (after exp_03; optional init from exp_03 best)
-# Set init_weights_from to exp_03 checkpoint if not running full sequence in one go.
-experiment_name: "exp_04_unfreeze_encoder"
-run_intention: "after exp03: unfreeze encoder @ep10"
+# Experiment 4: Overnight run — lower lr, subsample 0.8, stronger augmentation
+# Hypothesis: subsample + lower lr + wider color/gamma/hue augmentation reduces overfitting vs exp_03.
+experiment_name: "exp_04_overnight_subsample"
+run_intention: "vs exp03: lower lr, subsample 0.8, stronger aug"
 mode: "production"
 
 init_weights_from: "data/models/production/best_model.pt"
@@ -11,26 +11,23 @@ target_mode: "binary"
 training:
   loss_function: "bce"
   bce_pos_weight: 5.0
-  learning_rate: 0.00003
+  learning_rate: 0.000015
   batch_size: 16
-  num_epochs: 150
-  early_stopping_patience: 15
+  num_epochs: 200
+  early_stopping_patience: 20
   early_stopping_min_delta: 0
   lr_scheduler_patience: 6
   lr_scheduler_factor: 0.5
   max_grad_norm: 1.0
+  weight_decay: 0.002
   max_overfit_gap_ratio: 0.6
-
-model:
-  encoder:
-    freeze_encoder: true
-    unfreeze_after_epoch: 10
 
 data:
   tile_size: 512
-  train_subsample_ratio: 1.0
+  train_subsample_ratio: 0.8
+  dataloader_num_workers: 0
   illumination_filter: "sun"
-  augmentation: false
+  augmentation: true
   use_rgb: true
   use_dem: false
   use_slope: false

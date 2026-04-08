@@ -1,7 +1,8 @@
-# Experiment 4: Unfreeze encoder @ epoch 10 (after exp_03; optional init from exp_03 best)
-# Set init_weights_from to exp_03 checkpoint if not running full sequence in one go.
-experiment_name: "exp_04_unfreeze_encoder"
-run_intention: "after exp03: unfreeze encoder @ep10"
+# Experiment 3: BCE + positive-class weight (after exp_02_augmentation weights)
+# init_weights_from: best checkpoint from exp_02 (same path each run; sequential --all works).
+# If you run exp_03 alone, copy/rename your exp_02 best_model.pt to this path or edit below.
+experiment_name: "exp_03_bce_pos_weight"
+run_intention: "vs exp02: BCE + pos_weight on lobes"
 mode: "production"
 
 init_weights_from: "data/models/production/best_model.pt"
@@ -21,16 +22,12 @@ training:
   max_grad_norm: 1.0
   max_overfit_gap_ratio: 0.6
 
-model:
-  encoder:
-    freeze_encoder: true
-    unfreeze_after_epoch: 10
-
 data:
   tile_size: 512
   train_subsample_ratio: 1.0
+  dataloader_num_workers: 0
   illumination_filter: "sun"
-  augmentation: false
+  augmentation: true
   use_rgb: true
   use_dem: false
   use_slope: false

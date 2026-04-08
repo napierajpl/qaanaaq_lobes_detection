@@ -3,6 +3,7 @@ Training setup: tile loading/splits, dataloaders, model and training components.
 """
 
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -131,6 +132,18 @@ def create_training_dataloaders(
 ):
     train_augmentation = config["data"].get("augmentation", False)
     augmentation_config = config["data"].get("augmentation_config", {})
+    num_workers = int(config["data"].get("dataloader_num_workers", 0))
+    logger.info(
+        "DataLoader num_workers=%d%s",
+        num_workers,
+        " (parallel load+augment)" if num_workers > 0 else " (main thread; default on Windows)",
+    )
+    if sys.platform == "win32" and num_workers > 0:
+        logger.warning(
+            "dataloader_num_workers=%d on Windows often makes the first batches very slow (spawn + GeoTIFF I/O). "
+            "If epochs are much slower than before, set data.dataloader_num_workers: 0 in config.",
+            num_workers,
+        )
     return create_dataloaders(
         train_tiles,
         val_tiles,
@@ -138,6 +151,7 @@ def create_training_dataloaders(
         resolved.targets_dir,
         normalization_stats,
         batch_size=config["training"]["batch_size"],
+        num_workers=num_workers,
         tile_size=resolved.tile_size,
         target_mode=resolved.target_mode,
         binary_threshold=resolved.binary_threshold,

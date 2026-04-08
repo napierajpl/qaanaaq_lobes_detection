@@ -7,7 +7,7 @@ on top of the base training_config.yaml. Results are logged to MLflow.
 
 Usage:
     poetry run python scripts/run_experiment_sequence.py \
-        --experiments exp_00_baseline.yaml exp_01_augmentation.yaml
+        --experiments exp_01_baseline.yaml exp_02_augmentation.yaml
 
     poetry run python scripts/run_experiment_sequence.py --all
 """
@@ -54,7 +54,7 @@ def _load_experiment_overrides(experiment_path: Path) -> dict:
 
 def _apply_experiment_overrides(base_config: dict, overrides: dict) -> dict:
     merged = _deep_merge(base_config, overrides)
-    for key in ("experiment_name", "mode", "run_intention"):
+    for key in ("experiment_name", "mode", "run_intention", "init_weights_from"):
         merged.pop(key, None)
     return merged
 
@@ -68,11 +68,15 @@ def _run_single_experiment(
     experiment_name = overrides.get("experiment_name", experiment_path.stem)
     mode = overrides.get("mode", "production")
     run_intention = overrides.get("run_intention")
+    init_weights = overrides.get("init_weights_from")
+    init_weights_path = (project_root / init_weights) if init_weights else None
     config = _apply_experiment_overrides(base_config, overrides)
 
     logger.info("=" * 60)
     logger.info("EXPERIMENT: %s", experiment_name)
     logger.info("Intention: %s", run_intention or "(not set)")
+    if init_weights_path:
+        logger.info("Init weights: %s", init_weights_path)
     logger.info("Config file: %s", experiment_path.name)
     logger.info("Mode: %s", mode)
     logger.info("=" * 60)
@@ -87,6 +91,7 @@ def _run_single_experiment(
             run_name=experiment_name,
             config_path=project_root / "configs" / "training_config.yaml",
             run_intention=run_intention,
+            init_weights_from=init_weights_path,
         )
         elapsed = time.time() - start_time
         logger.info(

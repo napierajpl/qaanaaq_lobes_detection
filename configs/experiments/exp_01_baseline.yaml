@@ -1,15 +1,14 @@
-# Experiment 1: Add augmentation (flips, rotations, color jitter on ALL train tiles)
-# Hypothesis: Augmentation reduces overfitting, improves generalization on 400 tiles.
-# Change from baseline: augmentation enabled
-experiment_name: "exp_01_augmentation"
-run_intention: "vs baseline: +augment (flip/rot/color)"
+# Experiment 1: Sun-only baseline (no augmentation)
+# Hypothesis: Reference metrics on easier illumination subset.
+experiment_name: "exp_01_baseline"
+run_intention: "Baseline: BCE, sun tiles, no augment"
 mode: "production"
 
 target_mode: "binary"
 
 training:
   loss_function: "bce"
-  learning_rate: 0.00002
+  learning_rate: 0.00003
   batch_size: 16
   num_epochs: 150
   early_stopping_patience: 15
@@ -23,7 +22,7 @@ data:
   tile_size: 512
   train_subsample_ratio: 1.0
   illumination_filter: "sun"
-  augmentation: true
+  augmentation: false
   use_rgb: true
   use_dem: false
   use_slope: false

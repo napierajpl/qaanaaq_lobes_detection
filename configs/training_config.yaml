@@ -93,17 +93,36 @@ data:
   standardize_dem: true
   standardize_slope: true
   # Which input channels to use (at least one must be true). Order: RGB, DEM, Slope, Segmentation, SlopeStripes.
+  # Terrain: prefer slope_stripes over separate DEM + slope — stripes encode slope-related structure and
+  # Gabor texture (useful for solifluction / striped ground) in one channel instead of two raw rasters.
   use_rgb: true
   use_dem: false
   use_slope: false
   # Optional: segmentation layer (OBIA-style segment IDs). Requires paths.<key>.segmentation_dir.
+  # Synthetic-parenthesis sanity checks: keep this on; segment boundaries help the model.
   use_segmentation_layer: true
-  # Optional: slope-stripes (Gabor, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
+  # Optional: slope-stripes (Gabor on slope-related input, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
   use_slope_stripes_channel: true
   # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).
   use_background_and_augmentation: false
+  # Used when augmentation: true. Photometric ops apply to RGB only; geometry is joint with the mask.
+  augmentation_config:
+    geometric: true
+    color: true
+    gamma: true
+    hue: true
+    contrast_range: [0.72, 1.28]
+    saturation_range: [0.72, 1.28]
+    brightness_range: [-0.12, 0.12]
+    gamma_range: [0.78, 1.22]
+    hue_range: [-0.04, 0.04]
+    noise_std: 0.03
   # Subsampling: use a random subset of train tiles each epoch (0.0–1.0).
   train_subsample_ratio: 0.6
+  # DataLoader workers: 0 = load + augment on main thread (default; stable on Windows).
+  # Values > 0 can speed Linux/WSL I/O; on Windows they often make the *first* batches very slow
+  # (spawn + rasterio + disk) or worse overall — prefer 0 unless you measured a win.
+  dataloader_num_workers: 0
   # Illumination filter: train only on shadow or sun tiles (tiles inside boundary, tagged by add_illumination_tags).
   # null or "all" = use all tiles; "shadow" = only shadow; "sun" = only sun. Background excluded unless below is true.
   illumination_filter: "sun"
@@ -118,6 +137,9 @@ visualization:
   representative_tile_ids_dev_512: [0, 1, 2, 3]  # Optional: for 512x512 dev
   # When configured IDs don't match any tile (e.g. wrong grid), use first N tiles so MLflow always gets example figures
   prediction_tiles_fallback_n: 5  # 0 = no fallback
+  # During training, regenerate representative tile predictions at this interval (seconds).
+  # Default 3600 = every hour. Set 0 to disable periodic updates (only post-training).
+  viz_interval_seconds: 3600
 
 mlflow:
   experiment_name: "lobe_detection"

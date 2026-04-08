@@ -315,4 +315,14 @@ def save_checkpoint(
 
 
 def load_training_checkpoint(checkpoint_path: Path, device: torch.device) -> Dict[str, Any]:
-    return torch.load(checkpoint_path, map_location=device, weights_only=False)
+    """
+    Load a saved training checkpoint (model + optional optimizer, scheduler, loop state).
+
+    Always uses ``map_location=\"cpu\"``. Loading with ``map_location=cuda`` would place
+    **all** tensors (including large Adam momentum buffers in ``optimizer_state_dict``)
+    on the GPU during unpickling—even when only ``model_state_dict`` is used (e.g. init-weights).
+    That wastes VRAM/PCIe time and can stall for minutes. Callers apply state to modules
+    already on ``device`` via ``load_state_dict`` (PyTorch copies weights to the right device).
+    """
+    _ = device
+    return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
