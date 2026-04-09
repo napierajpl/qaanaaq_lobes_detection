@@ -1,6 +1,4 @@
-"""
-Training loop: one-epoch train/validate, Optuna pruning, early stopping, best-model save, loss plot.
-"""
+"""Training loop: one-epoch train/validate, Optuna pruning, early stopping, best-model save, loss plot."""
 
 import copy
 import logging
@@ -16,6 +14,7 @@ from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
+from src.training.layer_registry import LayerRegistry
 from src.training.trainer import train_one_epoch, validate, save_training_checkpoint, ValidationResult
 from src.training.visualization import (
     plot_loss_simple,
@@ -49,17 +48,11 @@ class TrainingLoopResult:
 
 @dataclass
 class TrainingLoopConfig:
-    features_dir: Path
     targets_dir: Path
-    normalization_stats: dict
+    layer_registry: LayerRegistry
     tile_size: int
     target_mode: str
     binary_threshold: float
-    segmentation_dir: Optional[Path]
-    slope_stripes_channel_dir: Optional[Path]
-    use_rgb: bool
-    use_dem: bool
-    use_slope: bool
     iou_threshold: float
     early_stopping_patience: Optional[int]
     early_stopping_min_delta: float
@@ -279,17 +272,15 @@ def _save_best_model_and_viz(
 
 
 def _log_best_tile_figures(tracker: _EpochTracker, model: nn.Module, cfg: TrainingLoopConfig, plt, mlflow) -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if tracker.best_tile_info_so_far is not None:
         bid = tracker.best_tile_info_so_far.get("tile_id")
         if bid != tracker.last_drawn_best_tile_id or tracker.best_tile_loss_so_far != tracker.last_drawn_best_tile_loss:
             fig = show_best_predicted_tile(
                 model, tracker.best_tile_info_so_far,
-                cfg.features_dir, cfg.targets_dir, cfg.normalization_stats,
-                torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                cfg.tile_size, cfg.iou_threshold, tracker.best_tile_loss_so_far,
+                cfg.targets_dir, cfg.layer_registry,
+                device, cfg.tile_size, cfg.iou_threshold, tracker.best_tile_loss_so_far,
                 target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
-                segmentation_base_dir=cfg.segmentation_dir, slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
-                use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
             )
             mlflow.log_figure(fig, "plots/best_predicted_tile.png")
             if cfg.loss_plot_path is not None:
@@ -302,13 +293,10 @@ def _log_best_tile_figures(tracker: _EpochTracker, model: nn.Module, cfg: Traini
         if iid != tracker.last_drawn_best_iou_tile_id or tracker.best_iou_so_far != tracker.last_drawn_best_iou:
             fig = show_highest_iou_tile(
                 model, tracker.best_iou_tile_info_so_far,
-                cfg.features_dir, cfg.targets_dir, cfg.normalization_stats,
-                torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                cfg.tile_size, cfg.iou_threshold, tracker.best_iou_so_far,
+                cfg.targets_dir, cfg.layer_registry,
+                device, cfg.tile_size, cfg.iou_threshold, tracker.best_iou_so_far,
                 target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
-                segmentation_base_dir=cfg.segmentation_dir, slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
                 tile_loss=tracker.best_iou_tile_loss_so_far,
-                use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
             )
             mlflow.log_figure(fig, "plots/best_iou_tile.png")
             if cfg.loss_plot_path is not None:
@@ -336,12 +324,9 @@ def _maybe_log_representative_tiles(
     logger.info("Generating representative tile figures (epoch %s)...", epoch)
     pred_figures = create_prediction_tile_figures(
         model, cfg.representative_tiles,
-        cfg.features_dir, cfg.targets_dir, cfg.normalization_stats, device,
+        cfg.targets_dir, cfg.layer_registry, device,
         iou_threshold=cfg.iou_threshold, tile_size=cfg.tile_size,
         target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
-        segmentation_base_dir=cfg.segmentation_dir,
-        slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
-        use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
     )
     for tid, fig in pred_figures.items():
         mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
@@ -350,12 +335,9 @@ def _maybe_log_representative_tiles(
         plt.close(fig)
     channel_figures = create_representative_tiles_channel_figures(
         model, cfg.representative_tiles,
-        cfg.features_dir, cfg.targets_dir, cfg.normalization_stats, device,
+        cfg.targets_dir, cfg.layer_registry, device,
         iou_threshold=cfg.iou_threshold, tile_size=cfg.tile_size,
         target_mode=cfg.target_mode, binary_threshold=cfg.binary_threshold,
-        segmentation_base_dir=cfg.segmentation_dir,
-        slope_stripes_base_dir=cfg.slope_stripes_channel_dir,
-        use_rgb=cfg.use_rgb, use_dem=cfg.use_dem, use_slope=cfg.use_slope,
     )
     for tid, fig in channel_figures.items():
         mlflow.log_figure(fig, f"representative_channels/{tid}.png")
@@ -436,17 +418,11 @@ def run_training_loop(
     train_loader: DataLoader,
     val_loader: DataLoader,
     create_dataloaders_fn: Callable[[List, List], Tuple[DataLoader, DataLoader]],
-    features_dir: Path,
     targets_dir: Path,
-    normalization_stats: dict,
+    layer_registry: LayerRegistry,
     tile_size: int,
     target_mode: str,
     binary_threshold: float,
-    segmentation_dir: Optional[Path],
-    slope_stripes_channel_dir: Optional[Path],
-    use_rgb: bool,
-    use_dem: bool,
-    use_slope: bool,
     iou_threshold: float,
     early_stopping_patience: Optional[int],
     early_stopping_min_delta: float,
@@ -471,11 +447,9 @@ def run_training_loop(
     import matplotlib.pyplot as plt
 
     cfg = TrainingLoopConfig(
-        features_dir=features_dir, targets_dir=targets_dir,
-        normalization_stats=normalization_stats, tile_size=tile_size,
+        targets_dir=targets_dir, layer_registry=layer_registry,
+        tile_size=tile_size,
         target_mode=target_mode, binary_threshold=binary_threshold,
-        segmentation_dir=segmentation_dir, slope_stripes_channel_dir=slope_stripes_channel_dir,
-        use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
         iou_threshold=iou_threshold, early_stopping_patience=early_stopping_patience,
         early_stopping_min_delta=early_stopping_min_delta, max_grad_norm=max_grad_norm,
         best_model_path=best_model_path, loss_plot_path=loss_plot_path,

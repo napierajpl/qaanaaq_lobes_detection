@@ -119,7 +119,6 @@ def log_run_config_and_trial_metadata(
     in_channels: int,
     iou_threshold: float,
     filtered_tiles_path: Path,
-    features_dir: Path,
     targets_dir: Path,
     val_tiles: List[dict],
 ) -> None:
@@ -180,11 +179,7 @@ def log_run_config_and_trial_metadata(
             trial.set_user_attr("model_in_channels", in_channels)
             trial.set_user_attr("model_out_channels", int(config["model"].get("out_channels", 1)))
             trial.set_user_attr("training_iou_threshold", float(iou_threshold))
-            trial.set_user_attr("data_normalize_rgb", bool(config["data"].get("normalize_rgb", True)))
-            trial.set_user_attr("data_standardize_dem", bool(config["data"].get("standardize_dem", True)))
-            trial.set_user_attr("data_standardize_slope", bool(config["data"].get("standardize_slope", True)))
             trial.set_user_attr("filtered_tiles_path", str(filtered_tiles_path))
-            trial.set_user_attr("features_dir", str(features_dir))
             trial.set_user_attr("targets_dir", str(targets_dir))
             trial.set_user_attr("proximity_token", infer_proximity_token(str(targets_dir)))
         except Exception:

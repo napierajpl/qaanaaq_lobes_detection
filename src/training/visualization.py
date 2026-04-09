@@ -1,5 +1,4 @@
-"""
-Visualization utilities for training metrics.
+"""Visualization utilities for training metrics.
 
 This module re-exports all public symbols from the split sub-modules
 for backward compatibility. New code should import directly from:
@@ -32,7 +31,6 @@ from src.training.prediction_tiles import (  # noqa: F401
 )
 from src.training.channel_figures import (  # noqa: F401
     create_representative_tiles_channel_figures,
-    _load_raw_feature_channels_for_display,
     _build_training_params_info_lines,
     _channel_to_display,
     _segment_boundary_mask,

@@ -1,65 +1,77 @@
 import logging
+from pathlib import Path
 
 import pytest
 
 from src.training.training_config import (
     apply_illumination_filter,
-    compute_in_channels,
     validate_data_splits,
     validate_in_channels,
 )
 
 
-class TestComputeInChannels:
-    def test_all_channels_on(self):
-        data = {
-            "use_rgb": True,
-            "use_dem": True,
-            "use_slope": True,
-            "use_segmentation_layer": True,
-            "use_slope_stripes_channel": True,
+class TestValidateInChannels:
+    def test_all_layers_enabled(self):
+        config = {
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb", "enabled": True},
+                "dem": {"bands": 1, "normalization": "standardize", "enabled": True},
+                "slope": {"bands": 1, "normalization": "standardize", "enabled": True},
+                "segmentation": {"bands": 1, "normalization": "segmentation", "enabled": True},
+                "slope_stripes": {"bands": 1, "normalization": "clip01", "enabled": True},
+            },
+            "model": {},
         }
-        assert compute_in_channels(data) == 7
+        assert validate_in_channels(config) == 7
 
     def test_only_rgb(self):
-        data = {
-            "use_rgb": True,
-            "use_dem": False,
-            "use_slope": False,
-            "use_segmentation_layer": False,
-            "use_slope_stripes_channel": False,
+        config = {
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb", "enabled": True},
+                "dem": {"bands": 1, "normalization": "standardize", "enabled": False},
+            },
+            "model": {},
         }
-        assert compute_in_channels(data) == 3
+        assert validate_in_channels(config) == 3
 
     def test_only_slope_stripes(self):
-        data = {
-            "use_rgb": False,
-            "use_dem": False,
-            "use_slope": False,
-            "use_segmentation_layer": False,
-            "use_slope_stripes_channel": True,
+        config = {
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb", "enabled": False},
+                "slope_stripes": {"bands": 1, "normalization": "clip01", "enabled": True},
+            },
+            "model": {},
         }
-        assert compute_in_channels(data) == 1
+        assert validate_in_channels(config) == 1
 
     def test_none_enabled_raises(self):
-        data = {
-            "use_rgb": False,
-            "use_dem": False,
-            "use_slope": False,
-            "use_segmentation_layer": False,
-            "use_slope_stripes_channel": False,
-        }
-        with pytest.raises(ValueError, match="At least one input channel"):
-            compute_in_channels(data)
-
-    def test_defaults_rgb_dem_slope(self):
-        assert compute_in_channels({}) == 5
-
-
-class TestValidateInChannels:
-    def test_matching_value_no_warning(self, caplog):
         config = {
-            "data": {"use_rgb": True, "use_dem": True, "use_slope": True},
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb", "enabled": False},
+                "dem": {"bands": 1, "normalization": "standardize", "enabled": False},
+            },
+            "model": {},
+        }
+        with pytest.raises(ValueError, match="At least one input layer"):
+            validate_in_channels(config)
+
+    def test_defaults_enabled_true_when_missing(self):
+        config = {
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb"},
+                "dem": {"bands": 1, "normalization": "standardize"},
+            },
+            "model": {},
+        }
+        assert validate_in_channels(config) == 4
+
+    def test_matching_yaml_value_no_warning(self, caplog):
+        config = {
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb", "enabled": True},
+                "dem": {"bands": 1, "normalization": "standardize", "enabled": True},
+                "slope": {"bands": 1, "normalization": "standardize", "enabled": True},
+            },
             "model": {"in_channels": 5},
         }
         with caplog.at_level(logging.WARNING, logger="src.training.training_config"):
@@ -67,9 +79,13 @@ class TestValidateInChannels:
         assert result == 5
         assert "mismatch" not in caplog.text.lower()
 
-    def test_mismatched_value_warns(self, caplog):
+    def test_mismatched_yaml_value_warns(self, caplog):
         config = {
-            "data": {"use_rgb": True, "use_dem": True, "use_slope": True},
+            "layers": {
+                "rgb": {"bands": 3, "normalization": "rgb", "enabled": True},
+                "dem": {"bands": 1, "normalization": "standardize", "enabled": True},
+                "slope": {"bands": 1, "normalization": "standardize", "enabled": True},
+            },
             "model": {"in_channels": 3},
         }
         with caplog.at_level(logging.WARNING, logger="src.training.training_config"):
@@ -77,16 +93,6 @@ class TestValidateInChannels:
         assert result == 5
         assert "3" in caplog.text
         assert "5" in caplog.text
-
-    def test_no_yaml_value_returns_computed(self, caplog):
-        config = {
-            "data": {"use_rgb": True, "use_dem": False, "use_slope": False},
-            "model": {},
-        }
-        with caplog.at_level(logging.WARNING, logger="src.training.training_config"):
-            result = validate_in_channels(config)
-        assert result == 3
-        assert caplog.text == ""
 
 
 class TestValidateDataSplits:

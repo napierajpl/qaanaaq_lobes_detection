@@ -1,6 +1,4 @@
-"""
-Data loading utilities for training.
-"""
+"""Data loading utilities for training."""
 
 import json
 import random
@@ -18,11 +16,7 @@ from torchvision.transforms.functional import (
     adjust_saturation,
 )
 
-from src.preprocessing.normalization import (
-    normalize_rgb,
-    standardize_dem,
-    standardize_slope,
-)
+from src.training.layer_registry import LayerRegistry
 
 
 def get_all_tile_ids_from_dirs(
@@ -50,9 +44,6 @@ def is_tile_rgb_all_white(
     features_path: Path,
     white_threshold: float = 0.95,
 ) -> bool:
-    """
-    Return True if at least white_threshold fraction of RGB pixels are white (all bands >= 250).
-    """
     with rasterio.open(features_path) as src:
         if src.count < 3:
             return True
@@ -69,10 +60,6 @@ def get_background_candidates(
     white_threshold: float = 0.95,
     show_progress: bool = True,
 ) -> List[dict]:
-    """
-    Return list of tile dicts (tile_id, features_path, targets_path) for excluded tiles
-    that are not all-white (suitable as background tiles).
-    """
     try:
         from tqdm import tqdm
     except ImportError:
@@ -116,12 +103,6 @@ def build_extended_train_tiles(
     n_add: Optional[int] = None,
     random_seed: int = 42,
 ) -> List[dict]:
-    """
-    Build extended train list: train_tiles + n_add background + n_add augmented-lobe entries.
-    n_add defaults to min(len(train_tiles), len(background_candidates)).
-    Augmented entries have "augment": True and point to a lobe tile.
-    Each entry gets "role": "lobe" | "background" | "augmented_lobe" for persistence.
-    """
     rng = random.Random(random_seed)
     n_add = n_add or min(len(train_tiles), len(background_candidates))
     n_add = min(n_add, len(background_candidates))
@@ -152,7 +133,6 @@ def save_extended_training_tiles(
     config: Optional[dict] = None,
     stats: Optional[dict] = None,
 ) -> None:
-    """Save extended training tile list (with role) to JSON for reuse and shapefile train_usage."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -174,12 +154,13 @@ def load_extended_training_tiles(path: Path) -> tuple:
 
 
 def get_background_train_ids_from_extended_tiles(tiles: List[dict]) -> Set[str]:
-    """Return set of tile_id where role == 'background'."""
     return {t["tile_id"] for t in tiles if t.get("role") == "background"}
 
 
+# ── augmentation ────────────────────────────────────────────────────
+
+
 def _color_params_from_config(augmentation_config: dict) -> dict:
-    """Defaults favor stronger photometric diversity on RGB; non-RGB channels never pass through this."""
     return {
         "contrast_range": tuple(augmentation_config.get("contrast_range", (0.72, 1.28))),
         "saturation_range": tuple(augmentation_config.get("saturation_range", (0.72, 1.28))),
@@ -196,11 +177,11 @@ def _apply_lobe_augmentation(
     features: torch.Tensor,
     target: torch.Tensor,
     augmentation_config: dict,
+    rgb_range: Optional[Tuple[int, int]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Legacy augmentation for tile_info['augment'] == True (background-extended copies only)."""
     features, target = _apply_geometric_augmentation(features, target)
     color_kw = _color_params_from_config(augmentation_config)
-    features = _apply_color_augmentation(features, **color_kw)
+    features = _apply_color_augmentation(features, rgb_range=rgb_range, **color_kw)
     return features, target
 
 
@@ -208,7 +189,6 @@ def _apply_geometric_augmentation(
     features: torch.Tensor,
     target: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Random 90-degree rotation + random horizontal/vertical flip. Label-preserving for geospatial."""
     k = random.randint(0, 3)
     features = torch.rot90(features, k, dims=[1, 2])
     target = torch.rot90(target, k, dims=[1, 2])
@@ -223,6 +203,7 @@ def _apply_geometric_augmentation(
 
 def _apply_color_augmentation(
     features: torch.Tensor,
+    rgb_range: Optional[Tuple[int, int]] = None,
     contrast_range: Tuple[float, float] = (0.72, 1.28),
     saturation_range: Tuple[float, float] = (0.72, 1.28),
     brightness_range: Tuple[float, float] = (-0.12, 0.12),
@@ -232,11 +213,16 @@ def _apply_color_augmentation(
     use_hue: bool = True,
     hue_range: Tuple[float, float] = (-0.04, 0.04),
 ) -> torch.Tensor:
-    """Random hue, saturation, contrast, gamma, brightness, and noise on RGB channels only."""
-    if features.shape[0] < 3:
+    """Random photometric augmentation on RGB channels only."""
+    if rgb_range is None:
+        if features.shape[0] < 3:
+            return features
+        rgb_range = (0, 3)
+    start, end = rgb_range
+    if end - start < 3:
         return features
     features = features.clone()
-    rgb = features[0:3]
+    rgb = features[start:end]
     if use_hue:
         rgb = adjust_hue(rgb, random.uniform(*hue_range))
     rgb = adjust_saturation(rgb, random.uniform(*saturation_range))
@@ -245,7 +231,7 @@ def _apply_color_augmentation(
         rgb = adjust_gamma(rgb, random.uniform(*gamma_range))
     rgb = rgb + random.uniform(*brightness_range)
     rgb = rgb + torch.randn_like(rgb) * noise_std
-    features[0:3] = torch.clamp(rgb, 0.0, 1.0)
+    features[start:end] = torch.clamp(rgb, 0.0, 1.0)
     return features
 
 
@@ -253,168 +239,22 @@ def _apply_train_augmentation(
     features: torch.Tensor,
     target: torch.Tensor,
     augmentation_config: dict,
+    rgb_range: Optional[Tuple[int, int]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Full augmentation pipeline for all training tiles (when augmentation is enabled)."""
     if augmentation_config.get("geometric", True):
         features, target = _apply_geometric_augmentation(features, target)
     if augmentation_config.get("color", True):
         color_kw = _color_params_from_config(augmentation_config)
-        features = _apply_color_augmentation(features, **color_kw)
+        features = _apply_color_augmentation(features, rgb_range=rgb_range, **color_kw)
     return features, target
 
 
-def _load_and_normalize_segmentation_tile(
-    segmentation_path: Path,
-    tile_size: int,
-    nodata: float = -9999.0,
-) -> np.ndarray:
-    """Load segmentation tile (1 band), replace nodata with 0, scale non-zero to (0, 1]. Shape (1, H, W)."""
-    with rasterio.open(segmentation_path) as src:
-        seg = src.read(1)
-        nd = float(src.nodata if src.nodata is not None else nodata)
-    seg = np.asarray(seg, dtype=np.float32)
-    valid = seg != nd
-    out = np.zeros_like(seg)
-    if np.any(valid):
-        v = seg[valid]
-        v_max = float(np.max(v))
-        if v_max > 0:
-            out[valid] = v / v_max
-    return out[np.newaxis, :, :]
+# ── filtered tiles I/O ──────────────────────────────────────────────
 
 
-class TileDataset(Dataset):
-    """Dataset for loading feature and target tiles."""
-
-    def __init__(
-        self,
-        tile_list: List[dict],
-        features_base_dir: Path,
-        targets_base_dir: Path,
-        normalization_stats: Optional[dict] = None,
-        tile_size: int = 256,
-        augmentation_config: Optional[dict] = None,
-        target_mode: str = "proximity",
-        binary_threshold: float = 1.0,
-        segmentation_base_dir: Optional[Path] = None,
-        slope_stripes_base_dir: Optional[Path] = None,
-        use_rgb: bool = True,
-        use_dem: bool = True,
-        use_slope: bool = True,
-        train_augmentation: bool = False,
-    ):
-        self.tile_list = tile_list
-        self.features_base_dir = Path(features_base_dir)
-        self.targets_base_dir = Path(targets_base_dir)
-        self.normalization_stats = normalization_stats or {}
-        self.tile_size = tile_size
-        self.augmentation_config = augmentation_config or {}
-        self.target_mode = (target_mode or "proximity").lower()
-        self.binary_threshold = binary_threshold
-        self.segmentation_base_dir = Path(segmentation_base_dir) if segmentation_base_dir else None
-        self.slope_stripes_base_dir = Path(slope_stripes_base_dir) if slope_stripes_base_dir else None
-        self.use_rgb = use_rgb
-        self.use_dem = use_dem
-        self.use_slope = use_slope
-        self.train_augmentation = train_augmentation
-
-    def __len__(self) -> int:
-        return len(self.tile_list)
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get a single tile pair.
-
-        Returns:
-            Tuple of (features, target) as tensors
-        """
-        tile_info = self.tile_list[idx]
-        tile_id = tile_info.get("tile_id") or Path(tile_info["features_path"]).stem
-        features_path_str = tile_info["features_path"].replace("\\", "/")
-        features_path = Path(features_path_str) if Path(features_path_str).is_absolute() else self.features_base_dir / features_path_str
-
-        channel_list: List[np.ndarray] = []
-
-        if self.use_rgb or self.use_dem or self.use_slope:
-            with rasterio.open(features_path) as src:
-                all_bands = src.read()  # (5, H, W)
-            h, w = all_bands.shape[1], all_bands.shape[2]
-            if self.use_rgb:
-                rgb = normalize_rgb(all_bands[0:3])
-                channel_list.append(rgb)
-            if self.use_dem:
-                dem_mean = self.normalization_stats.get("dem", {}).get("mean")
-                dem_std = self.normalization_stats.get("dem", {}).get("std")
-                dem, _, _ = standardize_dem(all_bands[3:4], mean=dem_mean, std=dem_std)
-                channel_list.append(dem)
-            if self.use_slope:
-                slope_mean = self.normalization_stats.get("slope", {}).get("mean")
-                slope_std = self.normalization_stats.get("slope", {}).get("std")
-                slope, _, _ = standardize_slope(all_bands[4:5], mean=slope_mean, std=slope_std)
-                channel_list.append(slope)
-        else:
-            h, w = self.tile_size, self.tile_size
-
-        if self.segmentation_base_dir is not None:
-            seg_path = self.segmentation_base_dir / f"{tile_id}.tif"
-            if not seg_path.exists():
-                raise FileNotFoundError(f"Segmentation tile not found: {seg_path}")
-            seg = _load_and_normalize_segmentation_tile(seg_path, self.tile_size)
-            channel_list.append(seg)
-
-        if self.slope_stripes_base_dir is not None:
-            stripe_path = self.slope_stripes_base_dir / f"{tile_id}.tif"
-            if not stripe_path.exists():
-                raise FileNotFoundError(f"Slope-stripes tile not found: {stripe_path}")
-            with rasterio.open(stripe_path) as src:
-                stripe = src.read(1)
-            stripe = np.clip(np.asarray(stripe, dtype=np.float32), 0.0, 1.0)[np.newaxis, :, :]
-            if not (self.use_rgb or self.use_dem or self.use_slope):
-                h, w = stripe.shape[1], stripe.shape[2]
-            channel_list.append(stripe)
-
-        features = np.concatenate(channel_list, axis=0) if channel_list else np.zeros((1, self.tile_size, self.tile_size), dtype=np.float32)
-
-        targets_path_str = tile_info["targets_path"].replace("\\", "/")
-        targets_path = Path(targets_path_str) if Path(targets_path_str).is_absolute() else self.targets_base_dir / targets_path_str
-        with rasterio.open(targets_path) as src:
-            target = src.read(1)
-
-        assert features.shape[1] == self.tile_size and features.shape[2] == self.tile_size, \
-            f"Feature tile size mismatch: {features.shape[1]}x{features.shape[2]}, expected {self.tile_size}x{self.tile_size}"
-        assert target.shape[0] == self.tile_size and target.shape[1] == self.tile_size, \
-            f"Target tile size mismatch: {target.shape}, expected {self.tile_size}x{self.tile_size}"
-
-        # Convert to tensors
-        features_tensor = torch.from_numpy(features).float()
-        target_tensor = torch.from_numpy(target).float().unsqueeze(0)
-
-        if self.target_mode == "binary":
-            target_tensor = (target_tensor >= self.binary_threshold).float()
-
-        if self.train_augmentation:
-            features_tensor, target_tensor = _apply_train_augmentation(
-                features_tensor, target_tensor, self.augmentation_config,
-            )
-        elif tile_info.get("augment"):
-            features_tensor, target_tensor = _apply_lobe_augmentation(
-                features_tensor, target_tensor, self.augmentation_config,
-            )
-
-        return features_tensor, target_tensor
-
-
-def load_filtered_tiles(filtered_tiles_path: Path, show_progress: bool = False) -> List[dict]:
-    """
-    Load filtered tile list from JSON.
-
-    Args:
-        filtered_tiles_path: Path to filtered_tiles.json
-        show_progress: If True, show a progress bar while reading the file (chunked read).
-
-    Returns:
-        List of tile dictionaries
-    """
+def load_filtered_tiles(
+    filtered_tiles_path: Path, show_progress: bool = False
+) -> List[dict]:
     path = Path(filtered_tiles_path)
     if show_progress and path.exists():
         try:
@@ -432,107 +272,143 @@ def load_filtered_tiles(filtered_tiles_path: Path, show_progress: bool = False) 
                         pbar.update(len(chunk))
             data = json.loads(b"".join(chunks).decode("utf-8"))
             return data["tiles"]
-        except Exception:
-            pass  # Fall through to standard json.load below
+        except ImportError:
+            pass
     with open(path) as f:
         data = json.load(f)
     return data["tiles"]
 
 
 def create_data_splits(
-    tile_list: List[dict],
+    tiles: List[dict],
     train_split: float = 0.7,
     val_split: float = 0.15,
     test_split: float = 0.15,
     random_seed: int = 42,
 ) -> Tuple[List[dict], List[dict], List[dict]]:
-    """
-    Split tiles into train/val/test sets.
-
-    Args:
-        tile_list: List of all tiles
-        train_split: Fraction for training
-        val_split: Fraction for validation
-        test_split: Fraction for testing
-        random_seed: Random seed for reproducibility
-
-    Returns:
-        Tuple of (train_tiles, val_tiles, test_tiles)
-    """
-    # Validate splits sum to 1.0
     split_sum = train_split + val_split + test_split
     if abs(split_sum - 1.0) >= 1e-6:
         raise ValueError(
             f"Data splits must sum to 1.0, got {split_sum:.6f}. "
             f"train={train_split}, val={val_split}, test={test_split}"
         )
+    rng = random.Random(random_seed)
+    shuffled = list(tiles)
+    rng.shuffle(shuffled)
+    n = len(shuffled)
+    n_train = int(n * train_split)
+    n_val = int(n * val_split)
+    train = shuffled[:n_train]
+    val = shuffled[n_train:n_train + n_val]
+    test = shuffled[n_train + n_val:]
+    return train, val, test
 
-    rng = np.random.default_rng(random_seed)
-    indices = rng.permutation(len(tile_list))
 
-    n_train = int(len(tile_list) * train_split)
-    n_val = int(len(tile_list) * val_split)
+# ── dataset ─────────────────────────────────────────────────────────
 
-    train_indices = indices[:n_train]
-    val_indices = indices[n_train:n_train + n_val]
-    test_indices = indices[n_train + n_val:]
 
-    train_tiles = [tile_list[i] for i in train_indices]
-    val_tiles = [tile_list[i] for i in val_indices]
-    test_tiles = [tile_list[i] for i in test_indices]
+class TileDataset(Dataset):
+    """Dataset for loading feature and target tiles via LayerRegistry."""
 
-    return train_tiles, val_tiles, test_tiles
+    def __init__(
+        self,
+        tile_list: List[dict],
+        targets_base_dir: Path,
+        layer_registry: LayerRegistry,
+        tile_size: int = 256,
+        augmentation_config: Optional[dict] = None,
+        target_mode: str = "proximity",
+        binary_threshold: float = 1.0,
+        train_augmentation: bool = False,
+    ):
+        self.tile_list = tile_list
+        self.targets_base_dir = Path(targets_base_dir)
+        self.layer_registry = layer_registry
+        self.tile_size = tile_size
+        self.augmentation_config = augmentation_config or {}
+        self.target_mode = (target_mode or "proximity").lower()
+        self.binary_threshold = binary_threshold
+        self.train_augmentation = train_augmentation
+        self._rgb_range = layer_registry.channel_range("rgb")
+
+    def __len__(self) -> int:
+        return len(self.tile_list)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        tile_info = self.tile_list[idx]
+        tile_id = tile_info.get("tile_id") or Path(tile_info.get("features_path", "")).stem
+
+        features = self.layer_registry.load_tile(tile_id, self.tile_size)
+
+        targets_path = tile_info.get("targets_path", f"{tile_id}.tif")
+        targets_path_str = targets_path.replace("\\", "/")
+        targets_full = (
+            Path(targets_path_str)
+            if Path(targets_path_str).is_absolute()
+            else self.targets_base_dir / targets_path_str
+        )
+        with rasterio.open(targets_full) as src:
+            target = src.read(1)
+
+        assert features.shape[1] == self.tile_size and features.shape[2] == self.tile_size, \
+            f"Feature tile size mismatch: {features.shape[1]}x{features.shape[2]}, expected {self.tile_size}x{self.tile_size}"
+        assert target.shape[0] == self.tile_size and target.shape[1] == self.tile_size, \
+            f"Target tile size mismatch: {target.shape}, expected {self.tile_size}x{self.tile_size}"
+
+        features_tensor = torch.from_numpy(features).float()
+        target_tensor = torch.from_numpy(target).float().unsqueeze(0)
+
+        if self.target_mode == "binary":
+            target_tensor = (target_tensor >= self.binary_threshold).float()
+
+        if self.train_augmentation:
+            features_tensor, target_tensor = _apply_train_augmentation(
+                features_tensor, target_tensor, self.augmentation_config,
+                rgb_range=self._rgb_range,
+            )
+        elif tile_info.get("augment"):
+            features_tensor, target_tensor = _apply_lobe_augmentation(
+                features_tensor, target_tensor, self.augmentation_config,
+                rgb_range=self._rgb_range,
+            )
+
+        return features_tensor, target_tensor
+
+
+# ── dataloader factory ──────────────────────────────────────────────
 
 
 def create_dataloaders(
     train_tiles: List[dict],
     val_tiles: List[dict],
-    features_base_dir: Path,
     targets_base_dir: Path,
-    normalization_stats: dict,
+    layer_registry: LayerRegistry,
     batch_size: int = 16,
     num_workers: int = 0,
     tile_size: int = 256,
     augmentation_config: Optional[dict] = None,
     target_mode: str = "proximity",
     binary_threshold: float = 1.0,
-    segmentation_base_dir: Optional[Path] = None,
-    slope_stripes_base_dir: Optional[Path] = None,
-    use_rgb: bool = True,
-    use_dem: bool = True,
-    use_slope: bool = True,
     train_augmentation: bool = False,
 ) -> Tuple[DataLoader, DataLoader]:
     train_dataset = TileDataset(
         train_tiles,
-        features_base_dir,
         targets_base_dir,
-        normalization_stats,
+        layer_registry,
         tile_size=tile_size,
         augmentation_config=augmentation_config,
         target_mode=target_mode,
         binary_threshold=binary_threshold,
-        segmentation_base_dir=segmentation_base_dir,
-        slope_stripes_base_dir=slope_stripes_base_dir,
-        use_rgb=use_rgb,
-        use_dem=use_dem,
-        use_slope=use_slope,
         train_augmentation=train_augmentation,
     )
 
     val_dataset = TileDataset(
         val_tiles,
-        features_base_dir,
         targets_base_dir,
-        normalization_stats,
+        layer_registry,
         tile_size=tile_size,
         target_mode=target_mode,
         binary_threshold=binary_threshold,
-        segmentation_base_dir=segmentation_base_dir,
-        slope_stripes_base_dir=slope_stripes_base_dir,
-        use_rgb=use_rgb,
-        use_dem=use_dem,
-        use_slope=use_slope,
     )
 
     pin = torch.cuda.is_available()

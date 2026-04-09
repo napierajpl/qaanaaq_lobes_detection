@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Train CNN model for lobe detection.
-"""
+"""Train CNN model for lobe detection."""
 
 import copy
 import logging
@@ -30,7 +28,6 @@ from src.utils.config_utils import (
 )
 from src.training.training_config import (
     resolve_training_paths,
-    compute_in_channels,
     validate_in_channels,
     get_normalization_stats,
     log_training_config_summary,
@@ -70,7 +67,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Reduce log noise from known, non-actionable warnings
 warnings.filterwarnings(
     "ignore",
     message=r"You are using `torch\.load` with `weights_only=False`.*",
@@ -96,39 +92,18 @@ def train_model_with_config(
     run_intention: Optional[str] = None,
     init_weights_from: Optional[Path] = None,
 ) -> float:
-    """
-    Train model with given configuration.
-
-    This function can be called directly or used by Optuna for hyperparameter tuning.
-
-    Args:
-        config: Training configuration dictionary
-        mode: "dev" or "production"
-        trial: Optional Optuna trial object (for pruning)
-        run_name: Optional MLflow run name
-        applied_best_hparams: Optional dict from best_hyperparameters.yaml (for logging when --best-hparams was used)
-
-    Returns:
-        Best validation loss
-    """
     project_root = get_project_root(Path(__file__))
     resolved = resolve_training_paths(config, mode, project_root, filtered_tiles_override)
     in_channels = validate_in_channels(config)
     log_training_config_summary(resolved, mode)
 
-    filtered_tiles_path = resolved.filtered_tiles_path
-    features_dir = resolved.features_dir
+    layer_registry = resolved.layer_registry
     targets_dir = resolved.targets_dir
     models_dir = resolved.models_dir
-    segmentation_dir = resolved.segmentation_dir
-    slope_stripes_channel_dir = resolved.slope_stripes_channel_dir
-    path_key = resolved.path_key
     tile_size = resolved.tile_size
     target_mode = resolved.target_mode
     binary_threshold = resolved.binary_threshold
-    use_rgb = resolved.use_rgb
-    use_dem = resolved.use_dem
-    use_slope = resolved.use_slope
+    path_key = resolved.path_key
 
     train_tiles, val_tiles, test_tiles, all_tiles = prepare_tiles_and_splits(
         config, resolved, max_tiles
@@ -136,12 +111,8 @@ def train_model_with_config(
     extended_path = resolved.filtered_tiles_path.parent / "extended_training_tiles.json"
     use_bg_aug = config["data"].get("use_background_and_augmentation", False)
     normalization_stats = get_normalization_stats(
-        train_tiles, resolved.features_dir,
-        use_rgb, use_dem, use_slope,
-        use_bg_aug, extended_path,
+        train_tiles, layer_registry, use_bg_aug, extended_path,
     )
-    if not normalization_stats:
-        logger.info("Skipping normalization statistics (no RGB/DEM/Slope channels).")
 
     train_subsample_ratio = config["data"].get("train_subsample_ratio", 1.0)
     if train_subsample_ratio < 1.0:
@@ -152,7 +123,7 @@ def train_model_with_config(
 
     logger.info("Creating data loaders...")
     train_loader, val_loader = create_training_dataloaders(
-        train_tiles, val_tiles, resolved, normalization_stats, config
+        train_tiles, val_tiles, resolved, config
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -215,7 +186,6 @@ def train_model_with_config(
     trainable_params = components.trainable_params
     architecture = components.architecture
 
-    # Setup MLflow
     mlflow_config = config["mlflow"]
     setup_mlflow_experiment(mlflow_config["experiment_name"], mlflow_config.get("tracking_uri"))
 
@@ -228,7 +198,7 @@ def train_model_with_config(
             config, mode, run_name, trial, applied_best_hparams,
             num_params, trainable_params, len(train_tiles), len(val_tiles), train_subsample_ratio,
             architecture, in_channels, iou_threshold,
-            filtered_tiles_path, features_dir, targets_dir, val_tiles,
+            resolved.filtered_tiles_path, targets_dir, val_tiles,
         )
 
         best_model_path = models_dir / "best_model.pt"
@@ -254,12 +224,10 @@ def train_model_with_config(
 
         def _make_loaders(tr, val):
             return create_dataloaders(
-                tr, val, features_dir, targets_dir, normalization_stats,
+                tr, val, targets_dir, layer_registry,
                 batch_size=config["training"]["batch_size"],
                 num_workers=_num_workers,
                 tile_size=tile_size, target_mode=target_mode, binary_threshold=binary_threshold,
-                segmentation_base_dir=segmentation_dir, slope_stripes_base_dir=slope_stripes_channel_dir,
-                use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
                 train_augmentation=_train_aug, augmentation_config=_aug_cfg,
             )
 
@@ -285,8 +253,8 @@ def train_model_with_config(
         result = run_training_loop(
             config, model, criterion, optimizer, lr_scheduler, device,
             train_tiles, val_tiles, train_loader, val_loader, _make_loaders,
-            features_dir, targets_dir, normalization_stats, tile_size, target_mode, binary_threshold,
-            segmentation_dir, slope_stripes_channel_dir, use_rgb, use_dem, use_slope,
+            targets_dir, layer_registry,
+            tile_size, target_mode, binary_threshold,
             iou_threshold, early_stopping_patience, early_stopping_min_delta, max_grad_norm,
             best_model_path, loss_plot_path, trial, run_name, train_subsample_ratio, optuna,
             resume_state=resume_loop_state,
@@ -314,10 +282,8 @@ def train_model_with_config(
         if trial is None:
             run_post_training_visualization(
                 config, model, result,
-                features_dir, targets_dir, normalization_stats, device,
-                tile_size, iou_threshold, target_mode, binary_threshold,
-                segmentation_dir, slope_stripes_channel_dir,
-                use_rgb, use_dem, use_slope,
+                targets_dir, layer_registry,
+                device, tile_size, iou_threshold, target_mode, binary_threshold,
                 all_tiles, path_key, loss_plot_path, loss_plot_options, elapsed_seconds,
             )
         save_mlflow_model_if_enabled(model, mlflow_config, trial)
@@ -347,12 +313,10 @@ def _print_applied_hyperparameters(applied_best_hparams: dict, header: str) -> N
 
 
 def main():
-    """Main training function."""
     project_root = get_project_root(Path(__file__))
     parser = build_train_parser(project_root)
     args = parser.parse_args()
 
-    # Load config
     config_path = resolve_path(args.config, project_root)
     with open(config_path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
@@ -382,7 +346,6 @@ def main():
             "=== Applied best hyperparameters (from best_hyperparameters.yaml) ===",
         )
 
-    # Determine mode
     if args.mode is not None:
         mode = args.mode
     else:

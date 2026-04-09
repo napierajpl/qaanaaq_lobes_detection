@@ -24,12 +24,12 @@ def make_minimal_config(project_root: Path, out_path: Path) -> Path:
         config = yaml.safe_load(f)
     config["data"]["tile_size"] = 256
     config["data"]["use_background_and_augmentation"] = False
-    config["data"]["use_rgb"] = True
-    config["data"]["use_dem"] = True
-    config["data"]["use_slope"] = True
-    config["data"]["use_segmentation_layer"] = False
-    config["data"]["use_slope_stripes_channel"] = False
     config["data"]["illumination_filter"] = None
+    config["layers"]["rgb"]["enabled"] = True
+    config["layers"]["dem"]["enabled"] = True
+    config["layers"]["slope"]["enabled"] = True
+    config["layers"]["segmentation"]["enabled"] = False
+    config["layers"]["slope_stripes"]["enabled"] = False
     config["training"]["num_epochs"] = 1
     config["training"]["early_stopping_patience"] = 1
     with open(out_path, "w", encoding="utf-8") as f:

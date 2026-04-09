@@ -1,6 +1,4 @@
-"""
-Training setup: tile loading/splits, dataloaders, model and training components.
-"""
+"""Training setup: tile loading/splits, dataloaders, model and training components."""
 
 import logging
 import sys
@@ -19,6 +17,7 @@ from src.training.dataloader import (
     create_data_splits,
     create_dataloaders,
 )
+from src.training.layer_registry import LayerRegistry
 from src.training.loss_factory import create_criterion
 from src.training.training_config import (
     ResolvedTrainingPaths,
@@ -127,7 +126,6 @@ def create_training_dataloaders(
     train_tiles: List[dict],
     val_tiles: List[dict],
     resolved: ResolvedTrainingPaths,
-    normalization_stats: dict,
     config: dict,
 ):
     train_augmentation = config["data"].get("augmentation", False)
@@ -147,19 +145,13 @@ def create_training_dataloaders(
     return create_dataloaders(
         train_tiles,
         val_tiles,
-        resolved.features_dir,
         resolved.targets_dir,
-        normalization_stats,
+        resolved.layer_registry,
         batch_size=config["training"]["batch_size"],
         num_workers=num_workers,
         tile_size=resolved.tile_size,
         target_mode=resolved.target_mode,
         binary_threshold=resolved.binary_threshold,
-        segmentation_base_dir=resolved.segmentation_dir,
-        slope_stripes_base_dir=resolved.slope_stripes_channel_dir,
-        use_rgb=resolved.use_rgb,
-        use_dem=resolved.use_dem,
-        use_slope=resolved.use_slope,
         train_augmentation=train_augmentation,
         augmentation_config=augmentation_config,
     )

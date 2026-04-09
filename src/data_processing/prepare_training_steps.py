@@ -53,13 +53,11 @@ class PipelineRunner:
         print("Pipeline Complete")
         print("="*60)
         print(f"\nTiles created in: {tile_dir}/ ({self.tile_size}x{self.tile_size})")
-        print(f"  Features: {tile_dir}/features/")
+        print(f"  Each layer: {tile_dir}/<layer_name>/")
         print(f"  Targets: {tile_dir}/targets/")
-        print(f"  Slope-stripes: {tile_dir}/slope_stripes_channel/")
         print(f"  Filtered list: {tile_dir}/filtered_tiles.json")
         if self.dev_mode:
             print("\nNote: All processing done on 1024x1024 cropped files for quick testing")
-            print("Note: Feature VRT file: data/processed/raster/features_combined.vrt")
         print("\nFiltering: Empty RGB tiles excluded. Background-only tiles excluded.")
         print("\n" + "="*60)
         print("Timing Summary")
@@ -70,16 +68,83 @@ class PipelineRunner:
         print("="*60)
 
 
+def _derived_layer_steps(
+    cfg: Dict[str, Any],
+    mode_key: str,
+) -> List[Tuple[str, List[str]]]:
+    derived = cfg.get("derived_layers", {})
+    steps: List[Tuple[str, List[str]]] = []
+    for name, layer_cfg in derived.items():
+        mode_cfg = layer_cfg.get(mode_key)
+        if mode_cfg is None:
+            continue
+        transform = layer_cfg["transform"]
+        params = layer_cfg.get("params", {})
+        inputs = mode_cfg["inputs"]
+        output = mode_cfg["output"]
+        cmd: List[str] = [
+            "poetry", "run", "python", "scripts/create_derived_layer.py",
+            "--transform", transform,
+            "--output", output,
+        ]
+        for input_name, input_path in inputs.items():
+            cmd.extend(["--input", f"{input_name}={input_path}"])
+        for param_name, param_val in params.items():
+            cmd.extend(["--param", f"{param_name}={param_val}"])
+        desc = f"  Computing derived layer: {name} (transform={transform})"
+        steps.append((desc, cmd))
+    return steps
+
+
+def _tiling_steps(
+    cfg: Dict[str, Any],
+    mode_key: str,
+    tile_size: int,
+    tile_dir: str,
+) -> List[Tuple[str, List[str]]]:
+    tile_sources = cfg.get("tile_sources", {}).get(mode_key, {})
+    overlap = str(cfg.get("tiling", {}).get("overlap", 0.3))
+    steps: List[Tuple[str, List[str]]] = []
+    for layer_name, raster_path in tile_sources.items():
+        desc = f"  Tiling {layer_name} ({tile_size}x{tile_size})"
+        cmd = [
+            "poetry", "run", "python", "scripts/create_tiles.py",
+            "-i", raster_path,
+            "-o", f"{tile_dir}/{layer_name}",
+            "--tile-size", str(tile_size),
+            "--overlap", overlap,
+            "--no-organize",
+        ]
+        steps.append((desc, cmd))
+    return steps
+
+
+def _filter_step(
+    cfg: Dict[str, Any],
+    tile_dir: str,
+) -> Tuple[str, List[str]]:
+    filt = cfg.get("filtering", {})
+    lobe_threshold = str(filt.get("lobe_threshold", 5.0))
+    return (
+        "Filtering tiles (excluding empty RGB + background-only)",
+        [
+            "poetry", "run", "python", "scripts/filter_tiles.py",
+            "--features", f"{tile_dir}/rgb",
+            "--targets", f"{tile_dir}/targets",
+            "--output", f"{tile_dir}/filtered_tiles.json",
+            "--exclude-background",
+            "--lobe-threshold", lobe_threshold,
+        ],
+    )
+
+
 def production_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
     cfg = _load_pipeline_config()
     raw = cfg["raw"]
     prod = cfg["production"]
     prox = cfg["proximity"]
-    gabor = cfg["gabor"]
-    tiling = cfg["tiling"]
-    filt = cfg["filtering"]
 
-    steps = [
+    steps: List[Tuple[str, List[str]]] = [
         (
             f"Step 1: Generating proximity map for lobes ({prox['max_distance']}px)",
             [
@@ -108,80 +173,13 @@ def production_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
                 "-o", prod["slope_resampled"],
             ],
         ),
-        (
-            f"  Generating slope-stripes channel (RGB + DEM, Gabor "
-            f"freq={gabor['frequency']} sigma={gabor['sigma']} "
-            f"align={gabor['alignment_power']})...",
-            [
-                "poetry", "run", "python", "scripts/create_slope_stripes_channel.py",
-                "--method", gabor["method"],
-                "--gabor-frequency", str(gabor["frequency"]),
-                "--gabor-sigma", str(gabor["sigma"]),
-                "--alignment-power", str(gabor["alignment_power"]),
-                "-i", raw["rgb"],
-                "-d", prod["dem_resampled"],
-                "-o", prod["slope_stripes"],
-            ],
-        ),
-        (
-            "Step 3: Creating VRT stack for feature layers (RGB + DEM + Slope)",
-            [
-                "poetry", "run", "python", "scripts/create_vrt_stack.py",
-                "-i",
-                raw["rgb"],
-                prod["dem_resampled"],
-                prod["slope_resampled"],
-                "-o", prod["features_vrt"],
-            ],
-        ),
     ]
+
+    steps.extend(_derived_layer_steps(cfg, "production"))
+
     tile_dir = tile_dir_for_pipeline(False, tile_size)
-    overlap = str(tiling["overlap"])
-    steps.extend([
-        (
-            f"Step 4: Creating tiles for features ({tile_size}x{tile_size})",
-            [
-                "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", prod["features_vrt"],
-                "-o", f"{tile_dir}/features",
-                "--tile-size", str(tile_size),
-                "--overlap", overlap,
-            ],
-        ),
-        (
-            f"Step 5: Creating tiles for targets "
-            f"(proximity map {prox['max_distance']}px, {tile_size}x{tile_size})",
-            [
-                "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", prod["proximity_map"],
-                "-o", f"{tile_dir}/targets",
-                "--tile-size", str(tile_size),
-                "--overlap", overlap,
-            ],
-        ),
-        (
-            f"Step 5b: Creating tiles for slope-stripes channel ({tile_size}x{tile_size})",
-            [
-                "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", prod["slope_stripes"],
-                "-o", f"{tile_dir}/slope_stripes_channel",
-                "--tile-size", str(tile_size),
-                "--overlap", overlap,
-                "--no-organize",
-            ],
-        ),
-        (
-            "Step 6: Filtering tiles and computing baselines (excluding empty RGB tiles)",
-            [
-                "poetry", "run", "python", "scripts/filter_tiles.py",
-                "--features", f"{tile_dir}/features",
-                "--targets", f"{tile_dir}/targets",
-                "--output", f"{tile_dir}/filtered_tiles.json",
-                "--exclude-background",
-                "--lobe-threshold", str(filt["lobe_threshold"]),
-            ],
-        ),
-    ])
+    steps.extend(_tiling_steps(cfg, "production", tile_size, tile_dir))
+    steps.append(_filter_step(cfg, tile_dir))
     return steps
 
 
@@ -205,12 +203,9 @@ def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
     dev = cfg["dev"]
     crop = cfg["dev_crop"]
     prox = cfg["proximity"]
-    gabor = cfg["gabor"]
-    tiling = cfg["tiling"]
-    filt = cfg["filtering"]
 
     crop_size = f"{crop['width']}x{crop['height']}"
-    steps = [
+    steps: List[Tuple[str, List[str]]] = [
         _crop_step(f"Step 1: Cropping input files to {crop_size}",
                    raw["rgb"], dev["rgb_cropped"], crop),
         _crop_step("  Cropping DEM...",
@@ -238,21 +233,6 @@ def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
             ],
         ),
         (
-            f"  Generating slope-stripes channel (cropped RGB + DEM, Gabor "
-            f"freq={gabor['frequency']} sigma={gabor['sigma']} "
-            f"align={gabor['alignment_power']})...",
-            [
-                "poetry", "run", "python", "scripts/create_slope_stripes_channel.py",
-                "--method", gabor["method"],
-                "--gabor-frequency", str(gabor["frequency"]),
-                "--gabor-sigma", str(gabor["sigma"]),
-                "--alignment-power", str(gabor["alignment_power"]),
-                "-i", dev["rgb_cropped"],
-                "-d", dev["dem_resampled"],
-                "-o", dev["slope_stripes"],
-            ],
-        ),
-        (
             f"Step 3: Generating proximity map for cropped lobes ({prox['max_distance']}px)",
             [
                 "poetry", "run", "python", "scripts/generate_proximity_map.py",
@@ -262,63 +242,11 @@ def dev_steps(tile_size: int) -> List[Tuple[str, List[str]]]:
                 "--max-distance", str(prox["max_distance"]),
             ],
         ),
-        (
-            "Step 4: Creating VRT stack for cropped feature layers (RGB + DEM + Slope)",
-            [
-                "poetry", "run", "python", "scripts/create_vrt_stack.py",
-                "-i",
-                dev["rgb_cropped"],
-                dev["dem_resampled"],
-                dev["slope_resampled"],
-                "-o", dev["features_vrt"],
-            ],
-        ),
     ]
+
+    steps.extend(_derived_layer_steps(cfg, "dev"))
+
     tile_dir = tile_dir_for_pipeline(True, tile_size)
-    overlap = str(tiling["overlap"])
-    steps.extend([
-        (
-            f"Step 5: Creating tiles for features ({tile_size}x{tile_size})",
-            [
-                "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", dev["features_vrt"],
-                "-o", f"{tile_dir}/features",
-                "--tile-size", str(tile_size),
-                "--overlap", overlap,
-            ],
-        ),
-        (
-            f"Step 6: Creating tiles for targets "
-            f"(proximity map {prox['max_distance']}px, {tile_size}x{tile_size})",
-            [
-                "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", dev["proximity_map"],
-                "-o", f"{tile_dir}/targets",
-                "--tile-size", str(tile_size),
-                "--overlap", overlap,
-            ],
-        ),
-        (
-            f"Step 6b: Creating tiles for slope-stripes channel ({tile_size}x{tile_size})",
-            [
-                "poetry", "run", "python", "scripts/create_tiles.py",
-                "-i", dev["slope_stripes"],
-                "-o", f"{tile_dir}/slope_stripes_channel",
-                "--tile-size", str(tile_size),
-                "--overlap", overlap,
-                "--no-organize",
-            ],
-        ),
-        (
-            "Step 7: Filtering tiles and computing baselines (excluding empty RGB tiles)",
-            [
-                "poetry", "run", "python", "scripts/filter_tiles.py",
-                "--features", f"{tile_dir}/features",
-                "--targets", f"{tile_dir}/targets",
-                "--output", f"{tile_dir}/filtered_tiles.json",
-                "--exclude-background",
-                "--lobe-threshold", str(filt["lobe_threshold"]),
-            ],
-        ),
-    ])
+    steps.extend(_tiling_steps(cfg, "dev", tile_size, tile_dir))
+    steps.append(_filter_step(cfg, tile_dir))
     return steps

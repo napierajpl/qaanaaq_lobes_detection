@@ -1,6 +1,4 @@
-"""
-CLI builder for training script: data-driven argument definitions.
-"""
+"""CLI builder for training script: data-driven argument definitions."""
 
 from pathlib import Path
 from typing import Any, List
@@ -83,9 +81,18 @@ TRAIN_MODEL_ARG_SPECS: List[dict] = [
         "help": "Train only on sun or shadow tiles (plus background). Requires illumination tags from add_illumination_tags.py.",
     },
     {
-        "option": "--use-slope-stripes-channel",
-        "action": "store_true",
-        "help": "Use slope-stripes (Gabor) channel as 6th input. Requires slope_stripes_channel_dir in paths.",
+        "option": "--enable-layer",
+        "nargs": "+",
+        "metavar": "NAME",
+        "default": None,
+        "help": "Enable specific layers by name (e.g. --enable-layer dem slope).",
+    },
+    {
+        "option": "--disable-layer",
+        "nargs": "+",
+        "metavar": "NAME",
+        "default": None,
+        "help": "Disable specific layers by name (e.g. --disable-layer segmentation).",
     },
     {
         "option": "--resume",
@@ -127,7 +134,19 @@ def apply_cli_overrides(config: dict, args: Any) -> None:
         config["training"]["num_epochs"] = args.max_epochs
     if getattr(args, "tile_size", None) is not None:
         config["data"]["tile_size"] = args.tile_size
-    if getattr(args, "use_slope_stripes_channel", False):
-        config["data"]["use_slope_stripes_channel"] = True
     if getattr(args, "illumination_filter", None) is not None:
         config["data"]["illumination_filter"] = args.illumination_filter
+
+    enable = getattr(args, "enable_layer", None) or []
+    disable = getattr(args, "disable_layer", None) or []
+    layers = config.get("layers", {})
+    for name in enable:
+        if name in layers:
+            layers[name]["enabled"] = True
+        else:
+            raise ValueError(f"Unknown layer '{name}'. Available: {list(layers.keys())}")
+    for name in disable:
+        if name in layers:
+            layers[name]["enabled"] = False
+        else:
+            raise ValueError(f"Unknown layer '{name}'. Available: {list(layers.keys())}")

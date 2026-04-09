@@ -28,19 +28,23 @@ class TestProductionSteps:
             assert isinstance(cmd, list)
             assert len(cmd) >= 1
 
-    def test_tile_dir_in_feature_and_target_paths(self):
+    def test_tile_steps_use_layer_dirs(self):
         steps = production_steps(512)
-        descs_and_cmds = [c for _, c in steps]
-        joined = " ".join(" ".join(c) for c in descs_and_cmds)
-        assert "train_512/features" in joined
+        joined = " ".join(" ".join(c) for _, c in steps)
+        assert "train_512/rgb" in joined
         assert "train_512/targets" in joined
         assert "train_512/filtered_tiles.json" in joined
 
-    def test_256_uses_train_subdir(self):
+    def test_no_organize_flag_present(self):
         steps = production_steps(256)
-        joined = " ".join(" ".join(c) for _, c in steps)
-        assert "train/features" in joined
-        assert "train/targets" in joined
+        tiling_cmds = [c for _, c in steps if "create_tiles.py" in " ".join(c)]
+        for cmd in tiling_cmds:
+            assert "--no-organize" in cmd
+
+    def test_derived_layer_step_present(self):
+        steps = production_steps(512)
+        descs = [d for d, _ in steps]
+        assert any("derived layer" in d.lower() for d in descs)
 
 
 class TestDevSteps:
@@ -56,6 +60,11 @@ class TestDevSteps:
         steps = dev_steps(512)
         joined = " ".join(" ".join(c) for _, c in steps)
         assert "dev/train_512" in joined
+
+    def test_derived_layer_step_present(self):
+        steps = dev_steps(256)
+        descs = [d for d, _ in steps]
+        assert any("derived layer" in d.lower() for d in descs)
 
 
 class TestPipelineRunner:

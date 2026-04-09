@@ -6,6 +6,16 @@ mode: "production"
 
 target_mode: "binary"
 
+layers:
+  rgb:
+    enabled: true
+  dem:
+    enabled: false
+  slope:
+    enabled: false
+  segmentation:
+    enabled: true
+
 training:
   loss_function: "bce"
   learning_rate: 0.00003
@@ -23,7 +33,3 @@ data:
   train_subsample_ratio: 1.0
   illumination_filter: "sun"
   augmentation: false
-  use_rgb: true
-  use_dem: false
-  use_slope: false
-  use_segmentation_layer: true

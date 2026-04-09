@@ -1,6 +1,4 @@
-"""
-Post-training: log final metrics, print run end, load best checkpoint, visualizations, save MLflow model.
-"""
+"""Post-training: log final metrics, print run end, load best checkpoint, visualizations, save MLflow model."""
 
 import logging
 from pathlib import Path
@@ -8,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
+from src.training.layer_registry import LayerRegistry
 from src.training.training_loop import TrainingLoopResult
 from src.training.visualization import (
     create_training_plots,
@@ -79,19 +78,13 @@ def run_post_training_visualization(
     config: dict,
     model: torch.nn.Module,
     result: TrainingLoopResult,
-    features_dir: Path,
     targets_dir: Path,
-    normalization_stats: dict,
+    layer_registry: LayerRegistry,
     device: torch.device,
     tile_size: int,
     iou_threshold: float,
     target_mode: str,
     binary_threshold: float,
-    segmentation_dir: Optional[Path],
-    slope_stripes_channel_dir: Optional[Path],
-    use_rgb: bool,
-    use_dem: bool,
-    use_slope: bool,
     all_tiles: List[dict],
     path_key: str,
     loss_plot_path: Optional[Path],
@@ -116,22 +109,11 @@ def run_post_training_visualization(
     if result.best_tile_info_so_far is not None:
         logger.info("=== Creating best predicted tile figure ===")
         fig = show_best_predicted_tile(
-            model,
-            result.best_tile_info_so_far,
-            features_dir,
-            targets_dir,
-            normalization_stats,
-            device,
-            tile_size,
-            iou_threshold,
+            model, result.best_tile_info_so_far,
+            targets_dir, layer_registry,
+            device, tile_size, iou_threshold,
             result.best_tile_loss_so_far,
-            target_mode=target_mode,
-            binary_threshold=binary_threshold,
-            segmentation_base_dir=segmentation_dir,
-            slope_stripes_base_dir=slope_stripes_channel_dir,
-            use_rgb=use_rgb,
-            use_dem=use_dem,
-            use_slope=use_slope,
+            target_mode=target_mode, binary_threshold=binary_threshold,
         )
         mlflow.log_figure(fig, "plots/best_predicted_tile.png")
         if loss_plot_path is not None:
@@ -140,23 +122,12 @@ def run_post_training_visualization(
     if result.best_iou_tile_info_so_far is not None:
         logger.info("=== Creating best IoU tile figure ===")
         fig = show_highest_iou_tile(
-            model,
-            result.best_iou_tile_info_so_far,
-            features_dir,
-            targets_dir,
-            normalization_stats,
-            device,
-            tile_size,
-            iou_threshold,
+            model, result.best_iou_tile_info_so_far,
+            targets_dir, layer_registry,
+            device, tile_size, iou_threshold,
             result.best_iou_so_far,
-            target_mode=target_mode,
-            binary_threshold=binary_threshold,
-            segmentation_base_dir=segmentation_dir,
-            slope_stripes_base_dir=slope_stripes_channel_dir,
+            target_mode=target_mode, binary_threshold=binary_threshold,
             tile_loss=result.best_iou_tile_loss_so_far,
-            use_rgb=use_rgb,
-            use_dem=use_dem,
-            use_slope=use_slope,
         )
         mlflow.log_figure(fig, "plots/best_iou_tile.png")
         if loss_plot_path is not None:
@@ -176,21 +147,10 @@ def run_post_training_visualization(
     if rep_tiles:
         logger.info("=== Creating prediction tile visualizations ===")
         pred_figures = create_prediction_tile_figures(
-            model,
-            rep_tiles,
-            features_dir,
-            targets_dir,
-            normalization_stats,
-            device,
-            iou_threshold=iou_threshold,
-            tile_size=tile_size,
-            target_mode=target_mode,
-            binary_threshold=binary_threshold,
-            segmentation_base_dir=segmentation_dir,
-            slope_stripes_base_dir=slope_stripes_channel_dir,
-            use_rgb=use_rgb,
-            use_dem=use_dem,
-            use_slope=use_slope,
+            model, rep_tiles,
+            targets_dir, layer_registry, device,
+            iou_threshold=iou_threshold, tile_size=tile_size,
+            target_mode=target_mode, binary_threshold=binary_threshold,
         )
         for tid, fig in pred_figures.items():
             mlflow.log_figure(fig, f"prediction_tiles/{tid}.png")
@@ -198,22 +158,11 @@ def run_post_training_visualization(
             logger.info("Logged prediction tile: %s", tid)
         logger.info("=== Creating representative tiles channel visualizations ===")
         channel_figures = create_representative_tiles_channel_figures(
-            model,
-            rep_tiles,
-            features_dir,
-            targets_dir,
-            normalization_stats,
-            device,
-            iou_threshold=iou_threshold,
-            tile_size=tile_size,
-            target_mode=target_mode,
-            binary_threshold=binary_threshold,
-            segmentation_base_dir=segmentation_dir,
-            slope_stripes_base_dir=slope_stripes_channel_dir,
+            model, rep_tiles,
+            targets_dir, layer_registry, device,
+            iou_threshold=iou_threshold, tile_size=tile_size,
+            target_mode=target_mode, binary_threshold=binary_threshold,
             plot_options=loss_plot_options,
-            use_rgb=use_rgb,
-            use_dem=use_dem,
-            use_slope=use_slope,
         )
         for tid, fig in channel_figures.items():
             mlflow.log_figure(fig, f"representative_channels/{tid}.png")

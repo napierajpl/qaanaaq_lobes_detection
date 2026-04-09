@@ -33,8 +33,6 @@ PARAMS_TO_SHOW = [
     "learning_rate",
     "augmentation",
     "illumination_filter",
-    "use_dem",
-    "use_slope",
     "unfreeze_after_epoch",
     "bce_pos_weight",
     "num_epochs",

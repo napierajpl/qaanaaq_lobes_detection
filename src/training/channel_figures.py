@@ -1,6 +1,4 @@
-"""
-Per-channel representative-tile figures (RGB, DEM, Slope, Segmentation, Target, Prediction).
-"""
+"""Per-channel representative-tile figures — dynamically built from LayerRegistry."""
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -13,33 +11,8 @@ import numpy as np
 import rasterio
 import torch
 
+from src.training.layer_registry import LayerRegistry
 from src.training.prediction_tiles import _load_rgb_for_display
-
-
-def _load_raw_feature_channels_for_display(
-    features_path: Path, features_base_dir: Path
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    p = Path(features_path)
-    path = (features_base_dir / p) if not p.is_absolute() else p
-    empty = (
-        np.zeros((256, 256), dtype=np.float64),
-        np.zeros((256, 256), dtype=np.float64),
-        np.zeros((256, 256), dtype=np.float64),
-        np.zeros((256, 256), dtype=np.float64),
-        np.zeros((256, 256), dtype=np.float64),
-    )
-    if not path.exists():
-        return empty
-    with rasterio.open(path) as src:
-        if src.count < 5:
-            return empty
-        data = src.read([1, 2, 3, 4, 5])
-    r = np.asarray(data[0], dtype=np.float64)
-    g = np.asarray(data[1], dtype=np.float64)
-    b = np.asarray(data[2], dtype=np.float64)
-    dem = np.asarray(data[3], dtype=np.float64)
-    slope = np.asarray(data[4], dtype=np.float64)
-    return r, g, b, dem, slope
 
 
 def _build_training_params_info_lines(plot_options: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -97,9 +70,9 @@ def _segment_boundary_mask(seg: np.ndarray, nodata: float) -> np.ndarray:
 
 
 def _load_segmentation_for_display(
-    segmentation_base_dir: Path, tile_id: str,
-) -> Optional[tuple[np.ndarray, np.ndarray, int]]:
-    seg_path = segmentation_base_dir / f"{tile_id}.tif"
+    segmentation_dir: Path, tile_id: str,
+) -> Optional[tuple]:
+    seg_path = segmentation_dir / f"{tile_id}.tif"
     if not seg_path.exists():
         return None
     with rasterio.open(seg_path) as src:
@@ -117,122 +90,59 @@ def _load_segmentation_for_display(
     return (np.clip(out, 0, 1).astype(np.float32), boundaries, n_uniq)
 
 
-def create_representative_tiles_channel_figures(
-    model: torch.nn.Module,
-    rep_tiles: List[dict],
-    features_dir: Path,
-    targets_dir: Path,
-    normalization_stats: dict,
-    device: torch.device,
-    iou_threshold: float,
-    tile_size: int,
-    target_mode: str = "proximity",
-    binary_threshold: float = 1.0,
-    segmentation_base_dir: Optional[Path] = None,
-    slope_stripes_base_dir: Optional[Path] = None,
-    plot_options: Optional[Dict[str, Any]] = None,
-    use_rgb: bool = True,
-    use_dem: bool = True,
-    use_slope: bool = True,
-) -> Dict[str, plt.Figure]:
-    from src.training.dataloader import TileDataset
-    from src.evaluation.metrics import compute_mae, compute_iou
-
-    if not rep_tiles:
-        return {}
-    first_path = Path(features_dir) / rep_tiles[0].get("features_path", "").replace("\\", "/")
-    if first_path.exists():
-        with rasterio.open(first_path) as src:
-            h, w = src.height, src.width
-            if h == w:
-                tile_size = int(h)
-    model.eval()
-    mode = (target_mode or "proximity").lower()
-    vmin, vmax = (0.0, 1.0) if mode == "binary" else (0.0, 20.0)
-    dataset = TileDataset(
-        rep_tiles, features_dir, targets_dir, normalization_stats,
-        tile_size=tile_size, target_mode=target_mode, binary_threshold=binary_threshold,
-        segmentation_base_dir=segmentation_base_dir, slope_stripes_base_dir=slope_stripes_base_dir,
-        use_rgb=use_rgb, use_dem=use_dem, use_slope=use_slope,
-    )
-    info_lines = _build_training_params_info_lines(plot_options)
-    figures = {}
-    n_rows, n_cols = 2, 4
-    ax_slot_order = [0, 1, 2, 3, 5, 6, 7]
-    for i, tile_info in enumerate(rep_tiles):
-        features, target = dataset[i]
-        features_batch = features.unsqueeze(0).to(device)
-        with torch.no_grad():
-            pred = model(features_batch)
-        pred_np = np.squeeze(pred.cpu().numpy())
-        target_np = target.squeeze().numpy()
-        fp = tile_info.get("features_path", "").replace("\\", "/")
-        tid = tile_info.get("tile_id", f"tile_{i}")
-        raw_r, raw_g, raw_b, raw_dem, raw_slope = _load_raw_feature_channels_for_display(
-            Path(fp), Path(features_dir)
-        )
-        rgb = _load_rgb_for_display(Path(fp), Path(features_dir))
-        panels = _build_panels(
-            rgb, raw_dem, raw_slope, target_np, pred_np,
-            features, segmentation_base_dir, slope_stripes_base_dir, tid,
-        )
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
-        axes_flat = np.atleast_2d(axes).ravel()
-        for slot_idx, (panel_title, data, kind) in zip(ax_slot_order, panels):
-            ax = axes_flat[slot_idx]
-            _render_panel(ax, panel_title, data, kind, vmin, vmax, mode)
-            ax.axis("off")
-        axes_flat[4].axis("off")
-        for j in range(len(panels), len(ax_slot_order)):
-            axes_flat[ax_slot_order[j]].axis("off")
-        pred_t = torch.from_numpy(pred_np).unsqueeze(0).unsqueeze(0)
-        target_t = torch.from_numpy(target_np).unsqueeze(0).unsqueeze(0)
-        mae = compute_mae(pred_t, target_t)
-        iou = compute_iou(pred_t, target_t, threshold=iou_threshold)
-        fig_title = f"Representative tile: {tid}  |  MAE: {mae:.4f}  IoU: {iou:.4f}"
-        if plot_options and plot_options.get("run_intention"):
-            fig_title += "\n" + plot_options["run_intention"]
-        fig.suptitle(fig_title, fontsize=11)
-        if info_lines:
-            fig.subplots_adjust(left=0.02, bottom=0.18, right=0.98, top=0.92)
-            fig.text(
-                0.02, 0.02, "\n".join(info_lines), fontsize=6, ha="left", va="bottom",
-                transform=fig.transFigure, family="monospace",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8, edgecolor="lightgray"),
-            )
-        else:
-            plt.tight_layout()
-        figures[tid] = fig
-    return figures
+def _load_raw_layer_for_display(
+    tile_dir: Path, tile_id: str,
+) -> Optional[np.ndarray]:
+    path = tile_dir / f"{tile_id}.tif"
+    if not path.exists():
+        return None
+    with rasterio.open(path) as src:
+        return src.read(1).astype(np.float64)
 
 
 def _build_panels(
-    rgb, raw_dem, raw_slope, target_np, pred_np,
-    features, segmentation_base_dir, slope_stripes_base_dir, tid,
+    layer_registry: LayerRegistry,
+    tile_id: str,
+    target_np: np.ndarray,
+    pred_np: np.ndarray,
 ) -> list:
     panels = []
-    panels.append(("RGB", rgb, "rgb"))
-    dem_disp = _channel_to_display(raw_dem)
-    mn_dem, mx_dem = float(np.nanmin(raw_dem)), float(np.nanmax(raw_dem))
-    panels.append(("DEM", (dem_disp, f"{mn_dem:.1f}–{mx_dem:.1f}"), "gray_label"))
-    slope_disp = _channel_to_display(raw_slope)
-    mn_sl, mx_sl = float(np.nanmin(raw_slope)), float(np.nanmax(raw_slope))
-    panels.append(("Slope", (slope_disp, f"{mn_sl:.1f}–{mx_sl:.1f}"), "gray_label"))
-    seg_used = segmentation_base_dir is not None
-    seg_result = _load_segmentation_for_display(segmentation_base_dir, tid) if seg_used else None
-    if seg_result is not None:
-        seg_arr, seg_boundaries, n_seg = seg_result
-        panels.append((f"Segmentation ({n_seg} segments)",
-                        ("segmentation_contours", _channel_to_display(seg_arr), seg_boundaries),
-                        "segmentation_contours"))
-    else:
-        h, w = raw_dem.shape
-        placeholder = np.zeros((h, w), dtype=np.float32)
-        seg_title = "Segmentation (disabled)" if not seg_used else "Segmentation (no file)"
-        panels.append((seg_title, _channel_to_display(placeholder), "gray"))
-    if slope_stripes_base_dir is not None:
-        stripe = features[-1].numpy()
-        panels.append(("SlopeStripes", _channel_to_display(stripe), "gray"))
+    for layer in layer_registry.enabled_layers:
+        name = layer.spec.name
+        display = layer.spec.display
+        display_type = display.get("type", "")
+
+        if display_type == "rgb":
+            rgb = _load_rgb_for_display(tile_id, layer_registry)
+            panels.append((name.upper(), rgb, "rgb"))
+
+        elif display_type == "segmentation":
+            seg_result = _load_segmentation_for_display(layer.tile_dir, tile_id)
+            if seg_result is not None:
+                seg_arr, seg_boundaries, n_seg = seg_result
+                panels.append((
+                    f"Segmentation ({n_seg} segments)",
+                    ("segmentation_contours", _channel_to_display(seg_arr), seg_boundaries),
+                    "segmentation_contours",
+                ))
+            else:
+                h, w = target_np.shape
+                panels.append(("Segmentation (no file)", np.zeros((h, w), dtype=np.float32), "gray"))
+
+        else:
+            raw = _load_raw_layer_for_display(layer.tile_dir, tile_id)
+            if raw is None:
+                h, w = target_np.shape
+                panels.append((name.upper(), np.zeros((h, w), dtype=np.float32), "gray"))
+                continue
+            disp = _channel_to_display(raw)
+            show_range = display.get("show_range", False)
+            if show_range:
+                mn, mx = float(np.nanmin(raw)), float(np.nanmax(raw))
+                panels.append((name.upper(), (disp, f"{mn:.1f}–{mx:.1f}"), "gray_label"))
+            else:
+                panels.append((name.upper(), disp, "gray"))
+
     panels.append(("Target", target_np, "viridis"))
     panels.append(("Prediction", pred_np, "viridis"))
     return panels
@@ -263,3 +173,80 @@ def _render_panel(ax, title, data, kind, vmin, vmax, mode):
         im = ax.imshow(data, vmin=vmin, vmax=vmax, cmap="viridis")
         plt.colorbar(im, ax=ax, shrink=0.6, label="0–1" if mode == "binary" else "0–20")
         ax.set_title(title)
+
+
+def create_representative_tiles_channel_figures(
+    model: torch.nn.Module,
+    rep_tiles: List[dict],
+    targets_dir: Path,
+    layer_registry: LayerRegistry,
+    device: torch.device,
+    iou_threshold: float,
+    tile_size: int,
+    target_mode: str = "proximity",
+    binary_threshold: float = 1.0,
+    plot_options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, plt.Figure]:
+    from src.training.dataloader import TileDataset
+    from src.evaluation.metrics import compute_mae, compute_iou
+    from src.training.prediction_tiles import _infer_tile_size
+
+    if not rep_tiles:
+        return {}
+    tile_size = _infer_tile_size(layer_registry, rep_tiles, tile_size)
+    model.eval()
+    mode = (target_mode or "proximity").lower()
+    vmin, vmax = (0.0, 1.0) if mode == "binary" else (0.0, 20.0)
+    dataset = TileDataset(
+        rep_tiles, targets_dir, layer_registry,
+        tile_size=tile_size, target_mode=target_mode, binary_threshold=binary_threshold,
+    )
+    info_lines = _build_training_params_info_lines(plot_options)
+    figures = {}
+
+    n_layers = len(layer_registry.enabled_layers)
+    n_panels = n_layers + 2  # layers + target + prediction
+    n_cols = min(n_panels, 4)
+    n_rows = (n_panels + n_cols - 1) // n_cols
+
+    for i, tile_info in enumerate(rep_tiles):
+        features, target = dataset[i]
+        features_batch = features.unsqueeze(0).to(device)
+        with torch.no_grad():
+            pred = model(features_batch)
+        pred_np = np.squeeze(pred.cpu().numpy())
+        target_np = target.squeeze().numpy()
+        tid = tile_info.get("tile_id", f"tile_{i}")
+
+        panels = _build_panels(layer_registry, tid, target_np, pred_np)
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        axes_flat = np.atleast_2d(axes).ravel()
+        for slot_idx, (panel_title, data, kind) in enumerate(panels):
+            if slot_idx >= len(axes_flat):
+                break
+            ax = axes_flat[slot_idx]
+            _render_panel(ax, panel_title, data, kind, vmin, vmax, mode)
+            ax.axis("off")
+        for j in range(len(panels), len(axes_flat)):
+            axes_flat[j].axis("off")
+
+        pred_t = torch.from_numpy(pred_np).unsqueeze(0).unsqueeze(0)
+        target_t = torch.from_numpy(target_np).unsqueeze(0).unsqueeze(0)
+        mae = compute_mae(pred_t, target_t)
+        iou = compute_iou(pred_t, target_t, threshold=iou_threshold)
+        fig_title = f"Representative tile: {tid}  |  MAE: {mae:.4f}  IoU: {iou:.4f}"
+        if plot_options and plot_options.get("run_intention"):
+            fig_title += "\n" + plot_options["run_intention"]
+        fig.suptitle(fig_title, fontsize=11)
+        if info_lines:
+            fig.subplots_adjust(left=0.02, bottom=0.18, right=0.98, top=0.92)
+            fig.text(
+                0.02, 0.02, "\n".join(info_lines), fontsize=6, ha="left", va="bottom",
+                transform=fig.transFigure, family="monospace",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8, edgecolor="lightgray"),
+            )
+        else:
+            plt.tight_layout()
+        figures[tid] = fig
+    return figures

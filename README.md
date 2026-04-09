@@ -180,15 +180,31 @@ If you use the extended set (`use_background_and_augmentation: true`), re-run `*
 
 ## Input layers (channels)
 
-The model can use several **input channels**. At least one must be enabled in `configs/training_config.yaml` (under `data`); you can ablate channels to test their effect.
+The model can use several **input channels**. At least one must be enabled in the `layers:` section of `configs/training_config.yaml`; you can ablate channels by setting `enabled: false`.
 
-| Layer | Config toggle | Description |
-|-------|----------------|-------------|
-| **R, G, B** | `use_rgb` | Red, green, blue from the aerial imagery. |
-| **DEM** | `use_dem` | Digital elevation model. |
-| **Slope** | `use_slope` | Terrain slope (derived from DEM). |
-| **Slope Stripes** | `use_slope_stripes_channel` | Gabor-based texture aligned to slope (optional). See [Slope-stripes channel (optional)](#slope-stripes-channel-optional). |
-| **Segmentation** | `use_segmentation_layer` | OBIA-style segment IDs as a boundary hint (optional). See [Segmentation layer (optional)](#segmentation-layer-optional). |
+| Layer | Name in config | Bands | Normalization | Description |
+|-------|---------------|-------|---------------|-------------|
+| **R, G, B** | `rgb` | 3 | rgb (/255) | Red, green, blue from the aerial imagery. |
+| **DEM** | `dem` | 1 | standardize | Digital elevation model. |
+| **Slope** | `slope` | 1 | standardize | Terrain slope (derived from DEM). |
+| **Slope Stripes** | `slope_stripes` | 1 | clip01 | Gabor-based texture aligned to slope (optional). See [Slope-stripes channel (optional)](#slope-stripes-channel-optional). |
+| **Segmentation** | `segmentation` | 1 | segmentation | OBIA-style segment IDs as a boundary hint (optional). See [Segmentation layer (optional)](#segmentation-layer-optional). |
+
+Each layer is stored as **separate tiles** in its own directory (configured via `paths.<mode>.layer_dirs.<name>` in the training config). The `LayerRegistry` handles channel counting, normalization, and tile loading automatically.
+
+**Enabling/disabling layers** — in `training_config.yaml`:
+
+```yaml
+layers:
+  rgb:
+    enabled: true
+  dem:
+    enabled: false
+  slope_stripes:
+    enabled: true
+```
+
+Experiment YAML overrides work the same way (deep-merged on top of base config).
 
 **Representative tile (good prediction):** tile_7370 — prediction aligns well with target; car tracks are visible on the Slope Stripes panel.
 
@@ -286,9 +302,9 @@ Runs 30 trials with dev tiles and pruning (~8 h order of magnitude). Edit the sc
   - `--hp_from_run_id RUN_ID` – apply hyperparameters from an MLflow run (e.g. run ID from MLflow UI); takes precedence over `--best-hparams` if both are set
   - `--resume PATH` – continue training from a full checkpoint (`training_latest.pt` or a new-format `best_model.pt` with optimizer, scheduler, and metrics history); see [Warm start (resume)](#warm-start-resume)
   - `--init-weights PATH` – initialize model weights from a previous checkpoint but start a fresh training loop (new optimizer, epoch 1, reset early stopping). Use to fine-tune with different settings (e.g. new loss, pos_weight, unfrozen encoder) without retraining from scratch. See [Init weights (fine-tune)](#init-weights-fine-tune).
-  - `--use-slope-stripes-channel` – enable slope-stripes (Gabor) as an extra input channel; requires `slope_stripes_channel_dir` in paths
-  - `--slope-stripes-only` – use **only** the SlopeStripes channel (disable RGB, DEM, Slope, Segmentation). Same as setting `use_rgb`/`use_dem`/`use_slope`/`use_segmentation_layer` to false and `use_slope_stripes_channel` to true in config
-   **Input layer toggles** (in `configs/training_config.yaml` under `data`): **use_rgb**, **use_dem**, **use_slope**, **use_segmentation_layer**, **use_slope_stripes_channel**. At least one must be true. Use these to ablate channels (e.g. SlopeStripes-only by setting only `use_slope_stripes_channel: true`).
+  - `--enable-layer NAME` – enable a layer by name (e.g. `--enable-layer dem`)
+   - `--disable-layer NAME` – disable a layer by name (e.g. `--disable-layer slope`)
+   **Input layers** are configured in `configs/training_config.yaml` under `layers:`. Each layer has `enabled: true/false`. At least one must be enabled. See [Input layers (channels)](#input-layers-channels) for details.
    If using the extended set, ensure `extended_training_tiles.json` exists (optional step above) and `use_background_and_augmentation: true` in config.
    Runs are logged to MLflow (`./mlruns`). When prompted, you can enter a **run intention** (short description); it is stored as the MLflow tag `run_intention` and shown on the loss plot, useful for diary and run comparison. After training, artifacts include loss/MAE/IoU plots and, if configured, prediction-tile visualizations (see `configs/training_config.yaml` → `visualization.representative_tile_ids`).
 
@@ -432,7 +448,7 @@ Open [http://127.0.0.1:5001](http://127.0.0.1:5001). Use it to compare runs, vie
 
 ## Configuration
 
-- **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs, **input layer toggles** (`use_rgb`, `use_dem`, `use_slope`, `use_segmentation_layer`, `use_slope_stripes_channel`; at least one must be true), `illumination_filter` and `illumination_include_background` (when training on sun/shadow only).
+- **Training**: `configs/training_config.yaml` – model architecture, loss, optimizer, epochs, data paths, visualization tile IDs, **input layers** (under `layers:` — each with `enabled`, `bands`, `normalization`; at least one must be enabled), `illumination_filter` and `illumination_include_background` (when training on sun/shadow only).
 - **Data preparation / illumination**: `configs/data_preparation_config.yaml` – extended set (background, augmentation) and `**illumination`** (shadow/sun example tile IDs, `ambiguous_max_fraction` or `ambiguous_value_band` for tagging).
 - **Loss functions**: See [docs/loss_functions.md](docs/loss_functions.md) for descriptions of all options (`smooth_l1`, `weighted_smooth_l1`, `dice`, `iou`, `soft_iou`, `encouragement`, `focal`, `combined`).
 - **Best HP (after tuning)**: `configs/best_hyperparameters.yaml` – can be merged or used to update the main config.
@@ -497,7 +513,7 @@ Optional raster channel (Gabor freq=0.15, sigma=5.0) indicating where linear tex
 
 ![Gabor slope-stripes sample (freq=0.15, sigma=5.0)](docs/readme_assets/gabor_slope_stripes_sample.png)
 
-**Run** (after DEM/slope resampling): `poetry run python scripts/create_slope_stripes_channel.py --method gabor --gabor-frequency 0.15 --gabor-sigma 5.0`. Default output: `data/processed/raster/slope_stripes_channel.tif`. Tile with `create_tiles.py` (same size/overlap as features), then set `data.use_slope_stripes_channel: true` and `slope_stripes_channel_dir` in config. Requires `scikit-image`. `prepare_training_data.py` can generate and tile this channel in one go.
+**Run** (after DEM/slope resampling): `poetry run python scripts/create_slope_stripes_channel.py --method gabor --gabor-frequency 0.15 --gabor-sigma 5.0`. Default output: `data/processed/raster/slope_stripes_channel.tif`. Tile with `create_tiles.py` (same size/overlap as features), then set `layers.slope_stripes.enabled: true` and add the tile directory to `paths.<mode>.layer_dirs.slope_stripes` in config. Requires `scikit-image`. `prepare_training_data.py` can generate and tile this channel in one go.
 
 ---
 
@@ -519,7 +535,7 @@ A **separate raster layer** of segment IDs (OBIA-style, Felzenszwalb) can be use
   poetry run python scripts/create_tiles.py -i data/processed/raster/imagery_segmentation_layer.tif -o data/processed/tiles/train_512/segmentation --tile-size 512 --overlap 0.3 --no-organize
   ```
   For 256×256 use `-o data/processed/tiles/train/segmentation` and `--tile-size 256`.
-- **3) Enable in training:** In `configs/training_config.yaml` set `data.use_segmentation_layer: true` and under the chosen path (e.g. `paths.production_512`) set `segmentation_dir: "data/processed/tiles/train_512/segmentation"`. The model will use 6 input channels (RGB + DEM + slope + segmentation).
+- **3) Enable in training:** In `configs/training_config.yaml` set `layers.segmentation.enabled: true` and under the chosen path (e.g. `paths.production_512.layer_dirs`) set `segmentation: "data/processed/tiles/train_512/segmentation"`. The total input channels depend on which layers are enabled.
 
 ### Synthetic parenthesis
 
@@ -529,7 +545,7 @@ For the synthetic dataset, the full segmentation raster is created by `create_se
 
 ## Other scripts
 
-- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset. **Illumination:** `**classify_tiles_by_shadow_mask.py`** – classify tiles as sun/shadow/mixed from **shadow mask** (polygons = shadow, outside = sun; >30% minority → mixed); update `tile_registry.json` and `filtered_tiles.json`, write QGIS layer; config: `illumination.shadow_mask`, `illumination.mixed_threshold`. Legacy: `add_illumination_tags.py` (centroid or RGB).
+- **Data**: `rasterize_vector.py`, `generate_proximity_map.py`, `create_tiles.py`, `filter_tiles.py` – building blocks; usually run via `prepare_training_data.py`. **Derived layers:** `create_derived_layer.py` – generic CLI for computing derived layers (e.g. slope stripes) from input rasters using the transform registry; `split_combined_tiles.py` – one-time migration to split multi-band combined tiles into separate per-layer directories. **Slope-stripes:** `create_slope_stripes_channel.py` – Gabor or structure-tensor slope-aligned stripe channel (optional input channel); use `--method gabor --gabor-frequency 0.15 --gabor-sigma 5.0` for the default lobe dataset. **Illumination:** `**classify_tiles_by_shadow_mask.py`** – classify tiles as sun/shadow/mixed from **shadow mask** (polygons = shadow, outside = sun; >30% minority → mixed); update `tile_registry.json` and `filtered_tiles.json`, write QGIS layer; config: `illumination.shadow_mask`, `illumination.mixed_threshold`. Legacy: `add_illumination_tags.py` (centroid or RGB).
 - **Boundary / AOI**: `extract_imagery_boundaries.py` – vectorize valid-data (non-white) regions to GeoJSON; `filter_tiles_by_boundary.py` – filter `filtered_tiles.json` to tiles intersecting a boundary (e.g. research_boundary.shp).
 - **Synthetic**: `generate_synthetic_parenthesis_from_raster.py` – full-raster synthetic parenthesis inside boundary, then tile to 256/512; `generate_synthetic_parenthesis_dataset.py` – legacy tile-based synthetic data.
 - **Segmentation**: `create_segmentation_layer.py` – OBIA-style segment ID raster (optional CNN hint), limited to boundary by default.

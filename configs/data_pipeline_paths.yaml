@@ -16,8 +16,6 @@ production:
   proximity_map: "data/processed/raster/rasterized_lobes_raw_by_code_proximity20px.tif"
   dem_resampled: "data/processed/raster/dem_from_arcticDEM_resampled.tif"
   slope_resampled: "data/processed/raster/slope_from_dem_resampled.tif"
-  slope_stripes: "data/processed/raster/slope_stripes_channel.tif"
-  features_vrt: "data/processed/raster/features_combined.vrt"
 
 dev:
   rgb_cropped: "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif"
@@ -26,9 +24,7 @@ dev:
   lobes_cropped: "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024.tif"
   dem_resampled: "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif"
   slope_resampled: "data/processed/raster/dev/slope_from_dem_cropped1024x1024_resampled.tif"
-  slope_stripes: "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif"
   proximity_map: "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024_proximity20px.tif"
-  features_vrt: "data/processed/raster/dev/features_combined_cropped1024x1024.vrt"
 
 dev_crop:
   lon: "-69.2674970"
@@ -40,11 +36,47 @@ proximity:
   max_value: 20
   max_distance: 20
 
-gabor:
-  method: "gabor"
-  frequency: 0.15
-  sigma: 5.0
-  alignment_power: 5
+# Derived layers: auto-computed rasters from existing inputs.
+# Each entry defines a transform, its inputs (per mode), output path, and params.
+# To add a new derived layer:
+#   1. Add a DerivedLayerTransform subclass in src/preprocessing/derived_transforms.py
+#   2. Register it in TRANSFORM_REGISTRY
+#   3. Add config entry here
+derived_layers:
+  slope_stripes:
+    transform: slope_stripes
+    production:
+      inputs:
+        rgb: "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif"
+        dem: "data/processed/raster/dem_from_arcticDEM_resampled.tif"
+      output: "data/processed/raster/slope_stripes_channel.tif"
+    dev:
+      inputs:
+        rgb: "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif"
+        dem: "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif"
+      output: "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif"
+    params:
+      method: "gabor"
+      frequency: 0.15
+      sigma: 5.0
+      alignment_power: 5
+
+# Tile sources: which raster to tile for each layer (per mode).
+# All layers are tiled into separate directories with --no-organize (flat tile_NNNN.tif).
+# "targets" is special — always tiled but not an input layer.
+tile_sources:
+  production:
+    rgb: "data/raw/raster/imagery/qaanaaq_rgb_0_2m.tif"
+    dem: "data/processed/raster/dem_from_arcticDEM_resampled.tif"
+    slope: "data/processed/raster/slope_from_dem_resampled.tif"
+    slope_stripes: "data/processed/raster/slope_stripes_channel.tif"
+    targets: "data/processed/raster/rasterized_lobes_raw_by_code_proximity20px.tif"
+  dev:
+    rgb: "data/processed/raster/dev/qaanaaq_rgb_0_2m_cropped1024x1024.tif"
+    dem: "data/processed/raster/dev/dem_from_arcticDEM_cropped1024x1024_resampled.tif"
+    slope: "data/processed/raster/dev/slope_from_dem_cropped1024x1024_resampled.tif"
+    slope_stripes: "data/processed/raster/dev/slope_stripes_channel_cropped1024x1024.tif"
+    targets: "data/processed/raster/dev/rasterized_lobes_raw_by_code_cropped1024x1024_proximity20px.tif"
 
 tiling:
   overlap: 0.3

@@ -42,6 +42,19 @@ class TestColorAugmentationRgbOnly:
         f = torch.rand(2, 4, 4)
         assert torch.equal(_apply_color_augmentation(f.clone()), f)
 
+    def test_uses_explicit_rgb_range(self):
+        random.seed(0)
+        torch.manual_seed(0)
+        features = torch.rand(5, 8, 8)
+        head = features[0:1].clone()
+        out = _apply_color_augmentation(features, rgb_range=(1, 4))
+        assert torch.allclose(out[0:1], head)
+
+    def test_none_rgb_range_skips_all(self):
+        features = torch.rand(5, 8, 8).clone()
+        out = _apply_color_augmentation(features, rgb_range=None)
+        assert out.shape == features.shape
+
 
 # ── create_data_splits ──────────────────────────────────────────────
 

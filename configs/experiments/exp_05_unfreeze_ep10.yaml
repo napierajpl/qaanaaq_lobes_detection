@@ -8,6 +8,18 @@ init_weights_from: "data/models/production/best_model.pt"
 
 target_mode: "binary"
 
+layers:
+  rgb:
+    enabled: true
+  dem:
+    enabled: false
+  slope:
+    enabled: false
+  segmentation:
+    enabled: true
+  slope_stripes:
+    enabled: true
+
 model:
   encoder:
     freeze_encoder: true
@@ -33,8 +45,3 @@ data:
   dataloader_num_workers: 0
   illumination_filter: "sun"
   augmentation: true
-  use_rgb: true
-  use_dem: false
-  use_slope: false
-  use_segmentation_layer: true
-  use_slope_stripes_channel: true

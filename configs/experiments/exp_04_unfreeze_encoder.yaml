@@ -8,6 +8,18 @@ init_weights_from: "data/models/production/best_model.pt"
 
 target_mode: "binary"
 
+layers:
+  rgb:
+    enabled: true
+  dem:
+    enabled: false
+  slope:
+    enabled: false
+  segmentation:
+    enabled: true
+  slope_stripes:
+    enabled: true
+
 training:
   loss_function: "bce"
   bce_pos_weight: 5.0
@@ -31,8 +43,3 @@ data:
   train_subsample_ratio: 1.0
   illumination_filter: "sun"
   augmentation: false
-  use_rgb: true
-  use_dem: false
-  use_slope: false
-  use_segmentation_layer: true
-  use_slope_stripes_channel: true

@@ -7,7 +7,7 @@ model:
   #   - "unet": Baseline U-Net without pretrained encoder
   #   - "satlaspretrain_unet": U-Net with SatlasPretrain pretrained encoder (recommended)
   architecture: "satlaspretrain_unet"
-  in_channels: 5
+  # in_channels is computed automatically from enabled layers — do not set manually.
   out_channels: 1
 
   # UNet-specific parameters (only used if architecture == "unet")
@@ -83,26 +83,50 @@ training:
   # Gradient clipping (for stability)
   max_grad_norm: 1.0
 
+# ── Input layers ─────────────────────────────────────────────────────
+# Each layer is loaded from its own tile directory. Order here determines
+# channel order in the model input tensor. Experiment configs can override
+# individual layers via deep merge, e.g.: layers: { dem: { enabled: true } }
+layers:
+  rgb:
+    bands: 3
+    normalization: rgb
+    enabled: true
+    display:
+      type: rgb
+  dem:
+    bands: 1
+    normalization: standardize
+    enabled: false
+    display:
+      cmap: gray
+      show_range: true
+  slope:
+    bands: 1
+    normalization: standardize
+    enabled: false
+    display:
+      cmap: gray
+      show_range: true
+  segmentation:
+    bands: 1
+    normalization: segmentation
+    enabled: true
+    display:
+      type: segmentation
+  slope_stripes:
+    bands: 1
+    normalization: clip01
+    enabled: true
+    display:
+      cmap: gray
+
 data:
   # Tile size in pixels (256 or 512). Use 512 to match literature; 256 for faster training.
   tile_size: 512
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
-  normalize_rgb: true
-  standardize_dem: true
-  standardize_slope: true
-  # Which input channels to use (at least one must be true). Order: RGB, DEM, Slope, Segmentation, SlopeStripes.
-  # Terrain: prefer slope_stripes over separate DEM + slope — stripes encode slope-related structure and
-  # Gabor texture (useful for solifluction / striped ground) in one channel instead of two raw rasters.
-  use_rgb: true
-  use_dem: false
-  use_slope: false
-  # Optional: segmentation layer (OBIA-style segment IDs). Requires paths.<key>.segmentation_dir.
-  # Synthetic-parenthesis sanity checks: keep this on; segment boundaries help the model.
-  use_segmentation_layer: true
-  # Optional: slope-stripes (Gabor on slope-related input, 0–1). Requires paths.<key>.slope_stripes_channel_dir.
-  use_slope_stripes_channel: true
   # Extended training set: if true, training loads extended_training_tiles.json (lobe + background + augmented).
   use_background_and_augmentation: false
   # Used when augmentation: true. Photometric ops apply to RGB only; geometry is joint with the mask.
@@ -147,43 +171,57 @@ mlflow:
   log_artifacts: true
   log_model: true
 
+# ── Paths ────────────────────────────────────────────────────────────
+# Each mode has targets_dir, filtered_tiles, models_dir, and layer_dirs.
+# layer_dirs maps layer name → tile directory (one .tif per tile).
 paths:
-  # Dev mode, 256x256 tiles
   dev:
     filtered_tiles: "data/processed/tiles/dev/train/filtered_tiles.json"
-    features_dir: "data/processed/tiles/dev/train/features"
     targets_dir: "data/processed/tiles/dev/train/targets"
     models_dir: "data/models/dev"
-    # slope_stripes_channel_dir: "data/processed/tiles/dev/train/slope_stripes_channel"  # optional
+    layer_dirs:
+      rgb: "data/processed/tiles/dev/train/rgb"
+      dem: "data/processed/tiles/dev/train/dem"
+      slope: "data/processed/tiles/dev/train/slope"
+      segmentation: "data/processed/tiles/dev/train/segmentation"
+      slope_stripes: "data/processed/tiles/dev/train/slope_stripes"
 
-  # Dev mode, 512x512 tiles
   dev_512:
     filtered_tiles: "data/processed/tiles/dev/train_512/filtered_tiles.json"
-    features_dir: "data/processed/tiles/dev/train_512/features"
     targets_dir: "data/processed/tiles/dev/train_512/targets"
     models_dir: "data/models/dev"
-    # slope_stripes_channel_dir: "data/processed/tiles/dev/train_512/slope_stripes_channel"  # optional
+    layer_dirs:
+      rgb: "data/processed/tiles/dev/train_512/rgb"
+      dem: "data/processed/tiles/dev/train_512/dem"
+      slope: "data/processed/tiles/dev/train_512/slope"
+      segmentation: "data/processed/tiles/dev/train_512/segmentation"
+      slope_stripes: "data/processed/tiles/dev/train_512/slope_stripes"
 
-  # Production mode, 256x256 tiles
   production:
     filtered_tiles: "data/processed/tiles/train/filtered_tiles.json"
-    features_dir: "data/processed/tiles/train/features"
     targets_dir: "data/processed/tiles/train/targets"
     models_dir: "data/models/production"
+    layer_dirs:
+      rgb: "data/processed/tiles/train/rgb"
+      dem: "data/processed/tiles/train/dem"
+      slope: "data/processed/tiles/train/slope"
+      segmentation: "data/processed/tiles/train/segmentation"
+      slope_stripes: "data/processed/tiles/train/slope_stripes"
 
-  # Production mode, 512x512 tiles
   production_512:
     filtered_tiles: "data/processed/tiles/train_512/filtered_tiles.json"
-    features_dir: "data/processed/tiles/train_512/features"
     targets_dir: "data/processed/tiles/train_512/targets"
     models_dir: "data/models/production"
-    segmentation_dir: "data/processed/tiles/train_512/segmentation"
-    slope_stripes_channel_dir: "data/processed/tiles/train_512/slope_stripes_channel"
+    layer_dirs:
+      rgb: "data/processed/tiles/train_512/rgb"
+      dem: "data/processed/tiles/train_512/dem"
+      slope: "data/processed/tiles/train_512/slope"
+      segmentation: "data/processed/tiles/train_512/segmentation"
+      slope_stripes: "data/processed/tiles/train_512/slope_stripes_channel"
 
-  # Synthetic parenthesis (sanity-check, 512x512 only): separate from dev/production. Generate with:
-  #   poetry run python scripts/generate_synthetic_parenthesis_dataset.py
   synthetic_parenthesis_512:
     filtered_tiles: "data/processed/tiles/synthetic_parenthesis_512/filtered_tiles.json"
-    features_dir: "data/processed/tiles/synthetic_parenthesis_512/features"
     targets_dir: "data/processed/tiles/synthetic_parenthesis_512/targets"
     models_dir: "data/models/synthetic_parenthesis"
+    layer_dirs:
+      rgb: "data/processed/tiles/synthetic_parenthesis_512/rgb"
